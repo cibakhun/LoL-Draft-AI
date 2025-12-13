@@ -1,0 +1,200 @@
+class SmartDraft:
+    def __init__(self, meta_engine, profile_engine, comp_analyzer, learning_engine, ensemble_brain=None):
+        self.meta = meta_engine
+        self.profile = profile_engine
+        self.comp = comp_analyzer
+        self.learning = learning_engine
+        self.brain = ensemble_brain # The 3 AI System
+        
+    def calculate_score(self, champion, my_team, enemy_team, needs=None, my_team_roles=None, enemy_team_roles=None, my_role="MIDDLE", ddragon=None):
+        """
+        New AI-Driven Scoring.
+        Returns:
+            Score (0-100) representing Win Probability.
+            Details (Dict) explaining the AI confidence.
+        """
+        if not self.brain or not self.brain.is_trained:
+            return 0, "AI Learning..."
+            
+        # 1. Create Hypothetical Team
+        # precise team construction for the AI
+        
+        # Default to empty dicts if not provided (e.g. from tests)
+        if my_team_roles is None: my_team_roles = {}
+        if enemy_team_roles is None: enemy_team_roles = {}
+        
+        # Construct Blue Team (Us)
+        # We need to construct a dictionary {ROLE: ID}
+        # We start with the known roles from LCU
+        hypothetical_blue = my_team_roles.copy()
+        
+        # Inject the candidate into our assigned role
+        hypothetical_blue[my_role] = champion
+        
+        # Construct Red Team (Enemy)
+        # We use what we know. If roles are missing, the AI handles it (0 padding).
+        hypothetical_red = enemy_team_roles.copy()
+        
+        # 2. Predict Win Probability
+        # Brain expects Dicts or Lists. Dicts are safer now that we support them.
+        try:
+            # We must pass the ddragon instance for vectorization
+            ddragon_ref = ddragon or self.comp.ddragon
+            
+            # Calibration: Compress probabilities towards 50%
+            # The raw model is often overconfident (e.g. 0.9). We squash it to restore relative ranking.
+            # 0.9 -> 0.5 + (0.4 * 0.5) = 0.70 (70%)
+            compression_factor = 0.5
+            calibrated_prob = 0.5 + (prob - 0.5) * compression_factor
+            
+            # Safety Clamp (Global Reality Check)
+            filtered_prob = max(0.35, min(0.75, calibrated_prob))
+            
+            score = filtered_prob * 100
+            
+            # 3. Details
+            details = {
+                "WinProbability": f"{score:.1f}%",
+                "AI_Confidence": "High" if score > 55 else "Low"
+            }
+            
+            # 4. Optional: Explain Decision (Why?)
+            # This is expensive, maybe only do it for top picks?
+            # Or just return basic info. 
+            # Ideally we call brain.explain() separately if user clicks.
+            
+            return round(score, 1), details
+            
+        except Exception as e:
+            print(f"[SMART DRAFT] AI Error for {champion}: {e}")
+            return 0, "AI Error"
+
+    def batch_rank(self, candidates, my_team_roles, enemy_team_roles, my_role, ddragon):
+        """
+        Optimized Batch Processing.
+        Generates scenarios for ALL candidates and predicts in one go.
+        """
+        if not self.brain or not self.brain.is_trained:
+            return []
+
+        # 1. Prepare Batch Vectors
+        blue_teams = []
+        red_teams = [] 
+        
+        # FIX: Ensure Team Roles are Integers (LCU sends strings)
+        def clean_roles(role_dict):
+            cleaned = {}
+            for r, cid in role_dict.items():
+                try: cleaned[r] = int(cid)
+                except: pass
+            return cleaned
+
+        base_blue = clean_roles(my_team_roles)
+        clean_red = clean_roles(enemy_team_roles)
+        
+        # Cache Name->ID lookup for candidates
+        # candidates contains Names (e.g. "Ahri")
+        valid_candidates = []
+        
+        for name in candidates:
+            # Resolve Name -> ID
+            # ddragon.champions[name]['key']
+            try:
+                c_data = ddragon.champions.get(name)
+                if not c_data: continue
+                
+                cid = int(c_data['key'])
+                
+                # Construct scenario
+                scenario_blue = base_blue.copy()
+                scenario_blue[my_role] = cid
+                
+                blue_teams.append(scenario_blue)
+                red_teams.append(clean_red)
+                valid_candidates.append(name) 
+            except Exception as e: 
+                print(f"[SMART DRAFT] Error processing candidate '{name}': {e}")
+                pass
+            
+        if not blue_teams:
+            print(f"[SMART DRAFT] CRITICAL: No valid teams generated from {len(candidates)} candidates.")
+            return []
+            
+        # 2. Bulk Predict
+        probs = self.brain.predict_batch(blue_teams, red_teams, ddragon)
+        
+        results = []
+        for i, name in enumerate(valid_candidates):
+            raw_prob = probs[i]
+            
+            # Calibration: Compress towards 50%
+            compression = 0.5
+            calibrated = 0.5 + (raw_prob - 0.5) * compression
+            
+            # --- GOLD STANDARD: HYBRID INTELLIGENCE ---
+            # 1. The Dreamer (Neural Net): Predicts specific matchup synergy based on deep learning.
+            dreamer_score = calibrated 
+            
+            # 2. The Realist (Wilson Score): Measures statistical role reliability (Lower Bound).
+            realist_score = 0.45 # Default = Skeptical optimism for unknown
+            role_games = 0
+            
+            if self.brain and hasattr(self.brain, 'meta_stats'):
+                try:
+                    c_data_check = ddragon.champions.get(name)
+                    cid_check = int(c_data_check['key'])
+                    
+                    champ_stats = self.brain.meta_stats.get(cid_check, {})
+                    role_stats = champ_stats.get(my_role, {}) 
+                    role_games = role_stats.get('games', 0)
+                    role_wins = role_stats.get('wins', 0)
+                    
+                    # WILSON SCORE INTERVAL FORMULA (95% Confidence)
+                    if role_games > 0:
+                        z = 1.96 
+                        n = role_games
+                        p = role_wins / n
+                        
+                        denominator = 1 + z**2/n
+                        term1 = p + z**2/(2*n)
+                        term2 = z * ((p*(1-p) + z**2/(4*n)) / n)**0.5
+                        
+                        lower_bound = (term1 - term2) / denominator
+                        realist_score = lower_bound
+                    else:
+                        # 0 Games.
+                        # We penalize "Zero Data" significantly to ensure even shaky proven data (Teemo) wins.
+                        # Wilson Lower Bound of 16/30 (53%) is ~0.35. 
+                        # So Unknown must be <= 0.30 to lose to Teemo.
+                        realist_score = 0.30 
+                        
+                except Exception:
+                   realist_score = 0.30
+            
+            # 3. The Synthesis
+            # "Reine Perfektion": We balance Innovation (Dreamer) with Reliability (Realist).
+            # Weight: 70% Synergy / 30% Reliability
+            # If Reliability is terrible (0.4), it drags a 0.7 Dreamer down to ~0.61.
+            # If Reliability is great (0.6), it boosts a 0.5 Dreamer up to ~0.53.
+            
+            hybrid_prob = (dreamer_score * 0.7) + (realist_score * 0.3)
+            
+            # Clamp & Convert
+            final_prob = max(0.01, min(0.99, hybrid_prob))
+            
+            score = final_prob * 100
+            # REMOVED FILTER to debug 0 results
+            # if score > -1:
+            # Determine Confidence Label
+            if score >= 60: conf_label = "High"
+            elif score >= 53: conf_label = "Medium"
+            else: conf_label = "Low"
+            
+            results.append({
+                "champion": name,
+                "score": round(score, 1),
+                "details": {"WinProbability": f"{score:.1f}%", "AI_Confidence": conf_label}
+            })
+                
+        return results
+
