@@ -77,14 +77,20 @@ class NeuralBrain:
         self.optimizer = optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-5)
         self.criterion = nn.BCELoss()
 
-    def train(self, X_champs, X_meta, y, epochs=20, batch_size=64):
+    def train(self, X_champs, X_meta, y, epochs=20, batch_size=64, vocab_size=None):
         """
         X_champs: [N, 10] (Blue 0-4, Red 5-9)
         X_meta: [N, 50]
         y: [N]
+        vocab_size: Total number of champions (indices) in the universe.
         """
         if not HAS_TORCH: return
-        if not self.model: self.initialize(num_champions=X_champs.max() + 1)
+        
+        # Determine Embedding Size
+        # If vocab_size is provided, use it. Otherwise guess from data (risky for small data).
+        if not self.model: 
+            size = vocab_size if vocab_size else (X_champs.max() + 1)
+            self.initialize(num_champions=size)
         
         print(f"[NEURAL BRAIN] Training on {len(y)} matches for {epochs} epochs...")
         

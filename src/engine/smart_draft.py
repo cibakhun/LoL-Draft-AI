@@ -41,6 +41,9 @@ class SmartDraft:
             # We must pass the ddragon instance for vectorization
             ddragon_ref = ddragon or self.comp.ddragon
             
+            # PREDICT
+            prob = self.brain.predict(hypothetical_blue, hypothetical_red, ddragon_ref)
+            
             # Calibration: Compress probabilities towards 50%
             # The raw model is often overconfident (e.g. 0.9). We squash it to restore relative ranking.
             # 0.9 -> 0.5 + (0.4 * 0.5) = 0.70 (70%)
@@ -52,11 +55,25 @@ class SmartDraft:
             
             score = filtered_prob * 100
             
+            # 2.5 Add Composition Synergy
+            synergy_score = 0
+            if self.comp:
+                synergy_score = self.comp.analyze_comp_impact(
+                    champion, hypothetical_blue, hypothetical_red, ddragon_ref
+                )
+                score += synergy_score
+                
+            # Clamp final score
+            score = max(0, min(100, score))
+            
+            # 3. Details
             # 3. Details
             details = {
                 "WinProbability": f"{score:.1f}%",
                 "AI_Confidence": "High" if score > 55 else "Low"
             }
+            if synergy_score != 0:
+                 details["Synergy"] = f"{synergy_score:+.1f}%"
             
             # 4. Optional: Explain Decision (Why?)
             # This is expensive, maybe only do it for top picks?
@@ -132,55 +149,7 @@ class SmartDraft:
             calibrated = 0.5 + (raw_prob - 0.5) * compression
             
             # --- GOLD STANDARD: HYBRID INTELLIGENCE ---
-            # 1. The Dreamer (Neural Net): Predicts specific matchup synergy based on deep learning.
-            dreamer_score = calibrated 
-            
-            # 2. The Realist (Wilson Score): Measures statistical role reliability (Lower Bound).
-            realist_score = 0.45 # Default = Skeptical optimism for unknown
-            role_games = 0
-            
-            if self.brain and hasattr(self.brain, 'meta_stats'):
-                try:
-                    c_data_check = ddragon.champions.get(name)
-                    cid_check = int(c_data_check['key'])
-                    
-                    champ_stats = self.brain.meta_stats.get(cid_check, {})
-                    role_stats = champ_stats.get(my_role, {}) 
-                    role_games = role_stats.get('games', 0)
-                    role_wins = role_stats.get('wins', 0)
-                    
-                    # WILSON SCORE INTERVAL FORMULA (95% Confidence)
-                    if role_games > 0:
-                        z = 1.96 
-                        n = role_games
-                        p = role_wins / n
-                        
-                        denominator = 1 + z**2/n
-                        term1 = p + z**2/(2*n)
-                        term2 = z * ((p*(1-p) + z**2/(4*n)) / n)**0.5
-                        
-                        lower_bound = (term1 - term2) / denominator
-                        realist_score = lower_bound
-                    else:
-                        # 0 Games.
-                        # We penalize "Zero Data" significantly to ensure even shaky proven data (Teemo) wins.
-                        # Wilson Lower Bound of 16/30 (53%) is ~0.35. 
-                        # So Unknown must be <= 0.30 to lose to Teemo.
-                        realist_score = 0.30 
-                        
-                except Exception:
-                   realist_score = 0.30
-            
-            # 3. The Synthesis
-            # "Reine Perfektion": We balance Innovation (Dreamer) with Reliability (Realist).
-            # Weight: 70% Synergy / 30% Reliability
-            # If Reliability is terrible (0.4), it drags a 0.7 Dreamer down to ~0.61.
-            # If Reliability is great (0.6), it boosts a 0.5 Dreamer up to ~0.53.
-            
-            hybrid_prob = (dreamer_score * 0.7) + (realist_score * 0.3)
-            
-            # Clamp & Convert
-            final_prob = max(0.01, min(0.99, hybrid_prob))
+            final_prob = self._calculate_hybrid_score(calibrated, name, my_role, ddragon)
             
             score = final_prob * 100
             # REMOVED FILTER to debug 0 results
@@ -197,4 +166,49 @@ class SmartDraft:
             })
                 
         return results
+
+    def _calculate_hybrid_score(self, neural_prob, champ_name, role, ddragon):
+        """
+        Combines Neural Dreams with Statistical Reality.
+        Exposed for Testing.
+        """
+        # 1. The Dreamer (Neural Net)
+        dreamer_score = neural_prob
+        
+        # 2. The Realist (Wilson Score)
+        realist_score = 0.45 # Default
+        role_games = 0
+        role_wins = 0
+        
+        if self.brain and hasattr(self.brain, 'meta_stats'):
+            try:
+                c_data = ddragon.champions.get(champ_name)
+                if c_data:
+                    cid = int(c_data['key'])
+                    champ_stats = self.brain.meta_stats.get(cid, {})
+                    role_stats = champ_stats.get(role, {})
+                    role_games = role_stats.get('games', 0)
+                    role_wins = role_stats.get('wins', 0)
+            except: pass
+            
+        # WILSON SCORE INTERVAL FORMULA (95% Confidence)
+        if role_games > 0:
+            z = 1.96 
+            n = role_games
+            p = role_wins / n
+            
+            denominator = 1 + z**2/n
+            term1 = p + z**2/(2*n)
+            term2 = z * ((p*(1-p) + z**2/(4*n)) / n)**0.5
+            
+            lower_bound = (term1 - term2) / denominator
+            realist_score = lower_bound
+        else:
+            # Penalty for Unknowns
+            realist_score = 0.30 
+            
+        # 3. The Synthesis
+        # Weight: 70% Neural / 30% Stats
+        hybrid_prob = (dreamer_score * 0.7) + (realist_score * 0.3)
+        return max(0.01, min(0.99, hybrid_prob))
 

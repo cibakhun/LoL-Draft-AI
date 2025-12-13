@@ -453,7 +453,12 @@ class EnsembleBrain:
                  X_meta.append(meta)    # [50]
                  y.append(m['win'])
             
-            self.neural.train(np.array(X_champs), np.array(X_meta), np.array(y))
+             # Ensure we pass the TRUE universe size, not just what's in the matches
+            # self.num_champs is set by extract_neural_features via ddragon
+            X_champs_arr = np.array(X_champs)
+            true_vocab_size = getattr(self, 'num_champs', int(X_champs_arr.max())) + 1
+            
+            self.neural.train(X_champs_arr, np.array(X_meta), np.array(y), vocab_size=true_vocab_size)
             print("[HIVE MIND] Neural Core Online.")
                 
         else:

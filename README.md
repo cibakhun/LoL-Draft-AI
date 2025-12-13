@@ -1,4 +1,4 @@
-# VANTAGE
+# VANTAGE v1.1
 > **VANTAGE: An advanced Neural-Symbolic drafting engine for League of Legends, utilizing deep entity embeddings and real-time inference.**
 
 ![Build Status](https://img.shields.io/badge/build-passing-brightgreen) ![Python](https://img.shields.io/badge/python-3.14-blue) ![PyTorch](https://img.shields.io/badge/core-PyTorch_CUDA-orange) ![Status](https://img.shields.io/badge/status-Gold_Standard-gold)

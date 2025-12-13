@@ -180,9 +180,42 @@ class BrainDatabase:
             
             if tid == 100:
                 current_data['win_val'] = 1 if win else 0
+        
+        # Flush last match
+        if current_match and valid:
+             if len(current_data['blue']) == 5 and len(current_data['red']) == 5:
+                 training_set.append({
+                     'blue': current_data['blue'], 
+                     'red': current_data['red'], 
+                     'win': current_data['win_val']
+                })
                 
         print(f"[DB] Extracted {len(training_set)} full 5v5 matches for training.")
+        print(f"[DB] Extracted {len(training_set)} full 5v5 matches for training.")
         return training_set
+
+    def get_meta_stats(self):
+        """
+        Retrieves aggregated champion stats from DB for Context Features.
+        Returns: { cid: { 'total_games': N, 'TOP': {'games': 10, 'wins': 5}... } }
+        """
+        print("[DB] Loading Meta-Statistics (Memory Cache)...")
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("SELECT champion_id, role, games, wins FROM meta_stats")
+            rows = c.fetchall()
+            conn.close()
+            
+        stats = {}
+        for cid, role, games, wins in rows:
+            if cid not in stats:
+                stats[cid] = {'total_games': 0}
+                
+            stats[cid]['total_games'] += games
+            stats[cid][role] = {'games': games, 'wins': wins}
+            
+        return stats
 
     def migrate_json_files(self, match_dir):
         """
