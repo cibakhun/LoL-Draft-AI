@@ -10,6 +10,8 @@ brain.db-wal
 *.db
 *.sqlite3
 brain.joblib
+*.pt
+tests/temp_brain_test/
 
 # Legacy & Backups
 legacy_backup/

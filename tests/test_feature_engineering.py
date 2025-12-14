@@ -52,11 +52,11 @@ class TestFeatureEngineering(unittest.TestCase):
         blue_team = {"TOP": 1} # Garen
         vec = self.brain._vectorize_team(blue_team, {}, self.dd)
         
-        # Garen ID=1 -> Index in sorted keys [1,2,3,4,5] -> idx 0
+        # Garen ID=1 -> Index in sorted keys [1,2,3,4,5] -> idx 1 (0 is UNK/PAD)
         # Role TOP -> Block 0
-        # Vector Index = (Block 0 * 5) + 0 = 0
+        # Vector Index = (Block 0 * 5) + 1 = 1
         
-        self.assertEqual(vec[0], 1.0)
+        self.assertEqual(vec[1], 1.0)
         
         # Verify NO other bits are set in the first 50 entries (Champion Blocks)
         # We check sum of slice

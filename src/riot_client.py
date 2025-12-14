@@ -5,6 +5,9 @@ import time
 class APIAuthError(Exception):
     pass
 
+class InvalidIDError(Exception):
+    pass
+
 class RiotClient:
     def __init__(self):
         self.api_keys = get_riot_api_key() # Now returns a LIST
@@ -52,8 +55,6 @@ class RiotClient:
         return True
 
 
-class InvalidIDError(Exception):
-    pass
 
     def _request(self, endpoint, region_prefix=None):
         """

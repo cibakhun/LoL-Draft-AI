@@ -116,6 +116,18 @@ class BrainDatabase:
             conn.close()
             return count
 
+    def get_all_match_ids(self):
+        """
+        Returns a set of all match IDs currently in the DB.
+        """
+        with self.lock:
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            c.execute("SELECT match_id FROM matches")
+            rows = c.fetchall()
+            conn.close()
+            return {r[0] for r in rows}
+
     def get_training_data(self, min_samples=0):
         """
         Returns structured data for LeagueNet Training.

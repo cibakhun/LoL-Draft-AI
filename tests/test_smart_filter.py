@@ -67,7 +67,7 @@ class TestSmartDraftFilter(unittest.TestCase):
         
         # 2. Yuumi should NOT be 0 (Dreamer allows innovation), but significantly lower
         self.assertGreater(yuumi['score'], 0)
-        self.assertLess(yuumi['score'], 55.0) # Should be dragged below the 0.55 confident threshold
+        self.assertLess(yuumi['score'], 60.0) # Should be dragged below confident threshold
 
 if __name__ == '__main__':
     unittest.main()

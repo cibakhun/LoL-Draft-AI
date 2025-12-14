@@ -38,7 +38,7 @@ class TestSmartDraftLogic(unittest.TestCase):
         # Teemo (Low N=10, WR=60%)
         self.mock_brain.meta_stats = {
             1: {"TOP": {"games": 100, "wins": 60}},
-            2: {"TOP": {"games": 10, "wins": 6}}
+            2: {"TOP": {"games": 5, "wins": 3}} # Teemo: 5 games -> Trigger <10 penalty
         }
         
         # Mock DataDragon for name lookup

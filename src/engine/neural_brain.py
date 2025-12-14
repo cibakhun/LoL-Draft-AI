@@ -27,22 +27,20 @@ class LeagueNet(nn.Module if HAS_TORCH else object):
         # + 30 Meta + 20 Context = 210
         input_dim = (10 * embedding_dim) + 50 
         
-        # 2. The Deep Brain (Feed Forward)
+        # 2. The Deep Brain (Optimized for Small Data)
+        # Reduced complexity to prevent overfitting (300k params -> ~30k params)
         self.layers = nn.Sequential(
-            nn.Linear(input_dim, 512),
-            nn.BatchNorm1d(512),
+            nn.Linear(input_dim, 128),
+            nn.BatchNorm1d(128),
+            nn.ReLU(),
+            nn.Dropout(0.5), # Strong Dropout
+            
+            nn.Linear(128, 64),
+            nn.BatchNorm1d(64),
             nn.ReLU(),
             nn.Dropout(0.3),
             
-            nn.Linear(512, 256),
-            nn.BatchNorm1d(256),
-            nn.ReLU(),
-            nn.Dropout(0.2),
-            
-            nn.Linear(256, 128),
-            nn.ReLU(),
-            
-            nn.Linear(128, 1),
+            nn.Linear(64, 1),
             nn.Sigmoid() # Win Probability
         )
         
@@ -72,9 +70,10 @@ class NeuralBrain:
 
     def initialize(self, num_champions):
         if not HAS_TORCH: return
-        print(f"[NEURAL BRAIN] Initializing LeagueNet on {self.device}...")
+        print(f"[NEURAL BRAIN] Initializing LeagueNet (Small) on {self.device}...")
         self.model = LeagueNet(num_champions).to(self.device)
-        self.optimizer = optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-5)
+        # Added Weight Decay (L2 Regularization) to fix overfitting
+        self.optimizer = optim.AdamW(self.model.parameters(), lr=0.001, weight_decay=1e-4) # Increased decay
         self.criterion = nn.BCELoss()
 
     def train(self, X_champs, X_meta, y, epochs=20, batch_size=64, vocab_size=None):
@@ -176,11 +175,21 @@ class NeuralBrain:
         if not HAS_TORCH: return False
         if os.path.exists(self.model_path):
             try:
+                # We interpret 'num_champions' as the Vocab Size from the saved metadata
                 self.initialize(num_champions)
-                self.model.load_state_dict(torch.load(self.model_path, map_location=self.device))
+                
+                state_dict = torch.load(self.model_path, map_location=self.device)
+                
+                # STRICT=False allows loading if we slightly changed architecture (risky but useful during dev)
+                # But here we want strict, unless we are debugging.
+                # If architecture changed, improved safety:
+                self.model.load_state_dict(state_dict)
+                
                 self.is_trained = True
-                print("[NEURAL BRAIN] Weights restored from disk.")
+                print("[NEURAL BRAIN] Synaptic weights restored.")
                 return True
+            except RuntimeError as e:
+                print(f"[NEURAL BRAIN] Architecture Mismatch (Retrain Required): {e}")
             except Exception as e:
                 print(f"[NEURAL BRAIN] Load failed: {e}")
         return False

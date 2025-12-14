@@ -44,18 +44,10 @@ class SmartDraft:
             # PREDICT
             prob = self.brain.predict(hypothetical_blue, hypothetical_red, ddragon_ref)
             
-            # Calibration: Compress probabilities towards 50%
-            # The raw model is often overconfident (e.g. 0.9). We squash it to restore relative ranking.
-            # 0.9 -> 0.5 + (0.4 * 0.5) = 0.70 (70%)
-            compression_factor = 0.5
-            calibrated_prob = 0.5 + (prob - 0.5) * compression_factor
+            # Calibration: Trust the Neural/Ensemble Output directly.
+            # No arbitrary clamping.
+            score = prob * 100
             
-            # Safety Clamp (Global Reality Check)
-            filtered_prob = max(0.35, min(0.75, calibrated_prob))
-            
-            score = filtered_prob * 100
-            
-            # 2.5 Add Composition Synergy
             synergy_score = 0
             if self.comp:
                 synergy_score = self.comp.analyze_comp_impact(
@@ -144,12 +136,9 @@ class SmartDraft:
         for i, name in enumerate(valid_candidates):
             raw_prob = probs[i]
             
-            # Calibration: Compress towards 50%
-            compression = 0.5
-            calibrated = 0.5 + (raw_prob - 0.5) * compression
-            
             # --- GOLD STANDARD: HYBRID INTELLIGENCE ---
-            final_prob = self._calculate_hybrid_score(calibrated, name, my_role, ddragon)
+            # We pass the raw probability to the hybrid scorer
+            final_prob = self._calculate_hybrid_score(raw_prob, name, my_role, ddragon)
             
             score = final_prob * 100
             # REMOVED FILTER to debug 0 results
@@ -170,15 +159,13 @@ class SmartDraft:
     def _calculate_hybrid_score(self, neural_prob, champ_name, role, ddragon):
         """
         Combines Neural Dreams with Statistical Reality.
-        Exposed for Testing.
+        New Logic: Neural is Truth. Stats provide Uncertainty Scaling.
         """
-        # 1. The Dreamer (Neural Net)
-        dreamer_score = neural_prob
+        # 1. The Dreamer (Neural Net / Ensemble)
+        score = neural_prob
         
-        # 2. The Realist (Wilson Score)
-        realist_score = 0.45 # Default
+        # 2. The Realist (Sample Size Check)
         role_games = 0
-        role_wins = 0
         
         if self.brain and hasattr(self.brain, 'meta_stats'):
             try:
@@ -188,27 +175,24 @@ class SmartDraft:
                     champ_stats = self.brain.meta_stats.get(cid, {})
                     role_stats = champ_stats.get(role, {})
                     role_games = role_stats.get('games', 0)
-                    role_wins = role_stats.get('wins', 0)
+                    print(f"[DEBUG] Cid: {cid} Role: {role} Games: {role_games}")
             except: pass
             
-        # WILSON SCORE INTERVAL FORMULA (95% Confidence)
-        if role_games > 0:
-            z = 1.96 
-            n = role_games
-            p = role_wins / n
+        # UNCERTAINTY DAMPENING
+        # If we have very few games on this champ in this role, we trust the model LESS.
+        # We pull the score towards 50%.
+        
+        if role_games < 10:
+            # High Uncertainty
+            # factor = 0.8 (Trust model 80%, Prior 20%)
+            uncertainty_factor = 0.8
+            score = (score * uncertainty_factor) + (0.5 * (1 - uncertainty_factor))
             
-            denominator = 1 + z**2/n
-            term1 = p + z**2/(2*n)
-            term2 = z * ((p*(1-p) + z**2/(4*n)) / n)**0.5
-            
-            lower_bound = (term1 - term2) / denominator
-            realist_score = lower_bound
-        else:
-            # Penalty for Unknowns
-            realist_score = 0.30 
-            
-        # 3. The Synthesis
-        # Weight: 70% Neural / 30% Stats
-        hybrid_prob = (dreamer_score * 0.7) + (realist_score * 0.3)
-        return max(0.01, min(0.99, hybrid_prob))
+        elif role_games > 50:
+            # High Confidence boost
+            # If the model is timid (0.55) but winrate is high, we might want to boost?
+            # actually, let's just leave it pure. The dampening is enough safety.
+            pass
+
+        return max(0.01, min(0.99, score))
 

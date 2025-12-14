@@ -9,15 +9,18 @@ from datetime import datetime, timedelta
 from src.riot_client import RiotClient, APIAuthError, InvalidIDError
 from src.scraper import LeaderboardScraper
 from src.analysis.timeline import TimelineAnalyzer
+from src.engine.persistence import BrainDatabase
 
 class MetaCrawler:
     def __init__(self, meta_engine):
         self.client = RiotClient()
         self.meta_engine = meta_engine
-        self.cache_file = "meta_cache.json"
-        self.history_file = "processed_matches.json"
+        
+        # Persistence
+        self.db = BrainDatabase() 
+        
+        self.cache_file = "meta_cache.json" # Still used for discovery queue/player cache
         self.player_cache_file = "player_cache.json"
-        self.match_archive_dir = os.path.join("src", "data", "matches")
         
         self.discovery_file = "discovery_queue.json"
         self.discovery_queue = set()
@@ -27,9 +30,12 @@ class MetaCrawler:
         self.player_cache = {} # {puuid: timestamp_iso}
         self.lock = Lock()
         
+        self.match_archive_dir = os.path.join("src", "data", "matches")
         self._ensure_dirs()
         self.analyzer = TimelineAnalyzer(self.match_archive_dir)
-        self._load_history()
+        
+        # Load State
+        self._load_history_from_db()
         self._load_player_cache()
         self._load_discovery_queue()
         
@@ -37,14 +43,14 @@ class MetaCrawler:
         if not os.path.exists(self.match_archive_dir):
             os.makedirs(self.match_archive_dir)
 
-    def _load_history(self):
-        if os.path.exists(self.history_file):
-            try:
-                with open(self.history_file, 'r') as f:
-                    self.processed_matches = set(json.load(f))
-                print(f"[CRAWLER] Loaded history: {len(self.processed_matches)} matches already analyzed.")
-            except:
-                self.processed_matches = set()
+    def _load_history_from_db(self):
+        print("[CRAWLER] 🔄 Connecting to SQLite Brain (WAL Mode)...")
+        try:
+            self.processed_matches = self.db.get_all_match_ids()
+            print(f"[CRAWLER] ✅ Brain Synced: {len(self.processed_matches)} matches loaded from DB.")
+        except Exception as e:
+            print(f"[CRAWLER] ⚠️ DB Connection Failed: {e}. Starting fresh.")
+            self.processed_matches = set()
 
     def _load_player_cache(self):
         if os.path.exists(self.player_cache_file):
@@ -64,8 +70,10 @@ class MetaCrawler:
                 self.discovery_queue = set()
 
     def _save_history(self):
-        with open(self.history_file, 'w') as f:
-            json.dump(list(self.processed_matches), f)
+        # DB handles matches now.
+        # with open(self.history_file, 'w') as f:
+        #    json.dump(list(self.processed_matches), f)
+            
         with open(self.player_cache_file, 'w') as f:
             json.dump(self.player_cache, f)
         with open(self.discovery_file, 'w') as f:
@@ -256,6 +264,12 @@ class MetaCrawler:
             # ----------------------
 
             # ARCHIVAL
+            # 1. Save to SQLite (Primary)
+            saved = self.db.save_match(data)
+            if saved:
+                print(f"[CRAWLER] 💾 Valid Match {match_id} saved to Brain DB.")
+            
+            # 2. Save to JSON (Backup/Legacy)
             self._archive_match(match_id, data)
             
             # TIMELINE (New)
@@ -394,4 +408,26 @@ class MetaCrawler:
         
         # Better approach: In _process_match, we already have the data.
         # Let's add a list of "matches_to_analyze" queue.
+
+if __name__ == "__main__":
+    from src.engine import MetaEngine
+    
+    print("##################################################")
+    print("#      VANTAGE META CRAWLER (STANDALONE)         #")
+    print("#      Mining Challenger Data...                 #")
+    print("##################################################\n")
+    
+    # Initialize Engine
+    meta_engine = MetaEngine()
+    
+    # Initialize Crawler
+    crawler = MetaCrawler(meta_engine)
+    crawler.start()
+    
+    # Keep Main Thread Alive
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("[CRAWLER] User Interrupt. Shutting down...")
         
