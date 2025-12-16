@@ -10,6 +10,7 @@ from src.riot_client import RiotClient, APIAuthError, InvalidIDError
 from src.scraper import LeaderboardScraper
 from src.analysis.timeline import TimelineAnalyzer
 from src.engine.persistence import BrainDatabase
+from src.engine.timeline import TimelineEngine
 
 class MetaCrawler:
     def __init__(self, meta_engine):
@@ -32,7 +33,8 @@ class MetaCrawler:
         
         self.match_archive_dir = os.path.join("src", "data", "matches")
         self._ensure_dirs()
-        self.analyzer = TimelineAnalyzer(self.match_archive_dir)
+        # self.analyzer = TimelineAnalyzer(self.match_archive_dir) # Deprecated
+        self.timeline_engine = TimelineEngine()
         
         # Load State
         self._load_history_from_db()
@@ -276,9 +278,21 @@ class MetaCrawler:
             try:
                 timeline = self.client.get_match_timeline(match_id)
                 if timeline:
+                    # 1. Archive
                     self._archive_match(match_id, timeline, suffix="_timeline")
+                    
+                    # 2. Process "Temporal DNA"
+                    # We need the participant list to map IDs
+                    # 'participants' is already extracted above from 'info'
+                    timeline_entries = self.timeline_engine.process_timeline(match_id, timeline, participants)
+                    
+                    if timeline_entries:
+                        self.db.update_timeline_stats(timeline_entries)
+                        print(f"[CRAWLER] ⏳ Timeline Stats processed for {match_id}.")
+                        
             except Exception as e:
-                pass # Silent fail for timeline
+                print(f"[CRAWLER] Timeline error for {match_id}: {e}")
+                pass
 
             queue_id = info.get('queueId', 0)
             game_mode = info.get('gameMode', '')

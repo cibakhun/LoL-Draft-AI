@@ -2,6 +2,7 @@ import numpy as np
 import os
 import json
 import joblib
+import time
 
 # Optional SOTA Brain
 try:
@@ -10,11 +11,23 @@ except ImportError:
     HAS_TORCH = False
     NeuralBrain = None
 
+from src.engine.features import FeatureEngine
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
+from sklearn.linear_model import SGDClassifier
 
 class EnsembleBrain:
     def __init__(self):
         self.neural = None
+        
+    def __init__(self):
+        self.neural = None
+        
+        # 0. Cortex (Feature Engine)
+        self.feature_engine = FeatureEngine()
+        
+        # Chronos (Timeline Engine)
+        from src.engine.timeline import TimelineEngine
+        self.timeline_engine = TimelineEngine()
         
         # 1. The Nuclear Option (PyTorch)
         if HAS_TORCH:
@@ -24,28 +37,31 @@ class EnsembleBrain:
             print("[HIVE MIND] PyTorch NOT Detected. Running in Legacy Mode (CPU).")
 
         # 2. Gradient Boosting (Logic / Optimization) - Still useful for structured data
+        # "Modern Meta" Expert -> Trains on the very latest data only.
         self.booster = HistGradientBoostingClassifier(
             max_iter=100,
             learning_rate=0.05,
-            max_depth=3,
-            min_samples_leaf=5,
+            max_depth=5,        # Slightly deeper for complex interactions
+            min_samples_leaf=10,
             early_stopping=True,
             random_state=42
         )
         
-        # 3. Random Forest (Experience / Memory)
-        self.forest = RandomForestClassifier(
-            n_estimators=150,
-            max_depth=8, 
-            min_samples_leaf=4, 
-            n_jobs=-1, 
-            random_state=42
-        )
+        # 3. Council of Trees (Bagged Forests)
+        # Scalable Random Forest for Infinite Data using Sliding Window
+        self.forest_council = []
+        self.council_size = 60 # Capacity: 60 * 50k = 3.0 Million Matches in active RAM (Titan Scale)
+        self.forest_batch_size = 50000 
+        
+        # 4. Meta-Learner (The Conductor)
+        # Learns how to weight the 3 models dynamically using Online Logistic Regression
+        self.meta_learner = SGDClassifier(loss='log_loss', learning_rate='optimal', random_state=42)
+        self.meta_warmup = False
         
         self.is_trained = False
         self.model_path = "brain.joblib"
-        self.vocab = {} # Mapping CID -> Index
-        # Ensemble Weights
+        
+        # Fallback Weights
         self.weights = {'neural': 0.50, 'forest': 0.30, 'booster': 0.20}
 
     def save(self, path=None):
@@ -53,20 +69,20 @@ class EnsembleBrain:
         if self.is_trained:
             print(f"[HIVE MIND] Persisting Ensemble state to {target}...")
             
-            # Save Scikit-Learn Models
+            # Save Scikit-Learn Models & Weights
             ensemble_state = {
-                'forest': self.forest,
+                'forest_council': self.forest_council,
                 'booster': self.booster,
-                'vocab': self.vocab,
-                'weights': self.weights
+                'weights': self.weights,
+                'meta_learner': self.meta_learner,
+                'meta_warmup': self.meta_warmup
             }
             joblib.dump(ensemble_state, target)
             
-            # Save Meta Stats
-            if hasattr(self, 'meta_stats'):
-                stats_path = target.replace(".joblib", "_stats.json")
-                with open(stats_path, 'w') as f:
-                    json.dump(self.meta_stats, f)
+            # Save Cortex State (Vocab, Stats, Matrix)
+            # We save it alongside the brain
+            stats_path = target.replace(".joblib", "_cortex.pkl")
+            self.feature_engine.save_state(stats_path)
             
             # Save Neural State
             if self.neural:
@@ -80,724 +96,383 @@ class EnsembleBrain:
             print(f"[HIVE MIND] Loading Ensemble state from {target}...")
             try:
                 ensemble_state = joblib.load(target)
-                self.forest = ensemble_state.get('forest', self.forest)
+                self.forest_council = ensemble_state.get('forest_council', [])
+                # Legacy Support
+                if not self.forest_council and 'forest' in ensemble_state:
+                     self.forest_council.append(ensemble_state['forest'])
                 self.booster = ensemble_state.get('booster', self.booster)
-                self.vocab = ensemble_state.get('vocab', {})
                 self.weights = ensemble_state.get('weights', self.weights)
+                self.meta_learner = ensemble_state.get('meta_learner', self.meta_learner)
+                self.meta_warmup = ensemble_state.get('meta_warmup', False)
                 
-                # Load Meta Stats
-                stats_path = target.replace(".joblib", "_stats.json")
+                # Load Cortex
+                stats_path = target.replace(".joblib", "_cortex.pkl")
                 if os.path.exists(stats_path):
-                    with open(stats_path, 'r') as f:
-                        raw_stats = json.load(f)
-                        self.meta_stats = {int(k): v for k, v in raw_stats.items()}
+                    self.feature_engine.load_state(stats_path)
+                else:
+                    # Try legacy stats json
+                    legacy_stats = target.replace(".joblib", "_stats.json")
+                    if os.path.exists(legacy_stats):
+                        print("[HIVE MIND] Importing Legacy Stats...")
+                        with open(legacy_stats, 'r') as f:
+                            raw = json.load(f)
+                            # Convert string keys back to int
+                            self.feature_engine.meta_stats = {}
+                            for k, v in raw.items():
+                                try: self.feature_engine.meta_stats[int(k)] = v
+                                except: pass
                 
                 # Load Neural
-                if self.neural and self.vocab:
-                    # Provide vocab size from loaded vocab
-                    vocab_size = max(self.vocab.values()) + 1
+                if self.neural and self.feature_engine.vocab:
+                    vocab_size = max(self.feature_engine.vocab.values()) + 1
                     self.neural.load(vocab_size)
 
                 self.is_trained = True
-                print(f"[HIVE MIND] Brain loaded. Vocab size: {len(self.vocab)}")
+                print(f"[HIVE MIND] Brain loaded. Council Size: {len(self.forest_council)}")
                 return True
                 
             except Exception as e:
                 print(f"[HIVE MIND] Load failed: {e}")
                 return False
         return False
-        
-    def _vectorize_team(self, blue_team, red_team, ddragon=None):
+
+    def train(self, match_dir=None, ddragon=None, batch_size=5000, epochs=1, db=None):
         """
-        Feature Engineering 3.0: Lane Awareness & Advanced Metrics.
-        
-        Inputs:
-        - blue_team: Dict { "TOP": id, "JUNGLE": id, ... } or List of IDs (fallback)
-        - red_team: Dict { "TOP": id, "JUNGLE": id, ... } or List of IDs
-        
-        Vector Layout:
-        [Blue Top One-Hot] ... [Blue Sup One-Hot] [Red Top One-Hot] ... (10 blocks)
-        + [Blue Meta] [Red Meta] (2 x 15 features)
-        
-        Total Size ~= (170 * 10) + 30 = 1730 features.
+        STATE OF THE ART: Online Learning Protocol.
+        Supports Infinite Scaling via Time-Series Streaming.
         """
-        # 0. Initialize Index if needed
-        self._ensure_vocab(ddragon)
+        print(f"[HIVE MIND] Awakening TITAN (Online Learning Mode)... Connecting to Brain Database...")
         
-        # Calculate Input Size based on Vocab
-        if hasattr(self, 'num_champs'):
-             # 10 Roles * N Champs + 30 Meta + 20 Context
-             self.input_size = (self.num_champs * 10) + 50
-        else:
-             self.input_size = 1750 # Fallback 
-
-        vec = np.zeros(self.input_size)
+        if db is None:
+            from src.engine.persistence import BrainDatabase
+            db = BrainDatabase()
         
-        # Helper: Role to Index Offset
-        role_map = {
-            "TOP": 0, "JUNGLE": 1, "MIDDLE": 2, "BOTTOM": 3, "UTILITY": 4
-        }
+        # 1. Build Vocab
+        self.feature_engine.build_vocab(ddragon)
         
-        # Helper: Normalize Inputs to Dict
-        def normalize_team(team_input, side_offset):
-            # side_offset: 0 for Blue, 5 for Red
-            # If list, we can't assume lanes. Just put them in matching slots or spread evenly?
-            # Fallback: If list, put in 0,1,2,3,4 (Assumes ordered list matches roles, which is shaky but best guess)
-            normalized = {}
-            if isinstance(team_input, list):
-                roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
-                for i, cid in enumerate(team_input):
-                    if i < 5: normalized[roles[i]] = cid
-            elif isinstance(team_input, dict):
-                # FIXED: Case-insensitive normalization
-                normalized = {k.upper(): v for k, v in team_input.items()}
-            return normalized
-
-        b_norm = normalize_team(blue_team, 0)
-        r_norm = normalize_team(red_team, 5)
-
-        # 1. Fill Positional One-Hots
-        for role, cid in b_norm.items():
-            if role in role_map and cid in self.id_to_idx:
-                # Block Offset + Champ Index
-                idx = (role_map[role] * self.num_champs) + self.id_to_idx[cid]
-                vec[idx] = 1
-
-        for role, cid in r_norm.items():
-            if role in role_map and cid in self.id_to_idx:
-                # Red starts at block 5
-                idx = ((role_map[role] + 5) * self.num_champs) + self.id_to_idx[cid]
-                vec[idx] = 1
-
-        # 2. Advanced Meta Features
-        # Offset is past all champion blocks
-        meta_start = self.num_champs * 10
-        context_start = meta_start + 30 # After the 30 general meta features
-        
-
-        if ddragon:
-            # Shared Logic
-            self._calculate_comp_stats(b_norm, vec, meta_start, ddragon)
-            self._calculate_comp_stats(r_norm, vec, meta_start + 15, ddragon)
+        # 2. Init Neural
+        if self.neural:
+            vocab_size = max(self.feature_engine.vocab.values()) + 1
+            self.neural.initialize(vocab_size)
             
-
-            
-        # 3. Meta-Context Features (Pass 2 Data)
-        # We need "Frequency" and "Winrate" for the specific Champ assigned to the Role.
-        # normalized dicts: role -> cid
+        # 3. Init Council & Memory
+        self.forest_council = [] 
+        # Crucial: Start with BLANK slate for meta-stats to avoid "Time Travel"
+        self.feature_engine.meta_stats = {} 
+        self.feature_engine.synergy_matrix = {}
         
-        def fill_context(team_norm, start_idx):
-            # Order: TOP, JUNGLE, MIDDLE, BOTTOM, UTILITY
-            # For each, 2 features: [Freq, WR]
-            roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
-            
-            for i, r in enumerate(roles):
-                cid = team_norm.get(r, 0)
-                freq = 0.0
-                wr = 0.45 # Default pessimist/average
-                
-                if cid != 0 and hasattr(self, 'meta_stats'):
-                    # Look up stats
-                    c_stats = self.meta_stats.get(cid, {})
-                    r_stats = c_stats.get(r, {})
-                    
-                    total_games = c_stats.get('total_games', 1)
-                    role_games = r_stats.get('games', 0)
-                    role_wins = r_stats.get('wins', 0)
-                    
-                    if total_games > 0:
-                        freq = role_games / total_games 
-                        # Or absolute frequency? Scale 0-1.
-                        # Role Rate is better: P(Role | Champ).
-                        # If I pick Garen, what is P(Top | Garen)? 0.9. P(Sup | Garen)? 0.01.
-                        
-                    if role_games > 0:
-                         # Bayesian Smoothing (C=5 games at 50% WR)
-                         # Prevents 1/1 or 2/2 games (100% WR) from appearing as 1.0 to the model.
-                         # 1.0 input to the model often triggers "Auto Win" logic in trees.
-                         # 2/2 -> (2 + 2.5) / (2 + 5) = 0.64 (64%)
-                         wr = (role_wins + 2.5) / (role_games + 5.0)
-                
-                vec[start_idx + (i*2)] = freq
-                vec[start_idx + (i*2) + 1] = wr
-
-        fill_context(b_norm, context_start)         # Blue Context (0-9)
-        fill_context(r_norm, context_start + 10)    # Red Context (10-19)
-
-        return vec
-
-    def _ensure_vocab(self, ddragon):
-        """
-        Ensures self.id_to_idx is populated.
-        If we have a saved vocab, we use it. 
-        If not (and we have DDragon), we build it (Training Mode).
-        """
-        if hasattr(self, 'id_to_idx'): return
+        # Training State
+        forest_buffer_X = []
+        forest_buffer_y = []
+        forest_cap = self.forest_batch_size # 50k per tree
         
-        if ddragon:
-            # Build new vocab (First Time Train)
-            all_ids = sorted([int(data['key']) for data in ddragon.champions.values()])
-            # Reserve 0 for "Unknown/Padding"? 
-            # In vectorize code: idx = (role_map[role] * self.num_champs) + self.id_to_idx[cid]
-            # If id_to_idx is 0-based, that's fine.
-            # But NeuralBrain usually uses 0 as padding.
-            # If we align them, we should probably use 1-based index or handle 0 carefully.
-            # Current vectorize logic: uses 0-based idx in range [0, num_champs-1].
-            
-            # Neural Logic: self.embedding = nn.Embedding(num_champions + 1, ...)
-            # So Neural expects indices 1..N.
-            
-            # Let's standardize: id_to_idx maps to 0..N-1 for Vectorize (One-Hot).
-            # For Neural, we might need to shift by +1 if 0 is padding.
-            
-            # Existing Code Check:
-            # Vectorize: vec[idx] = 1. idx = offset + id_to_idx[cid].
-            # Neural: idx = self.id_to_idx.get(cid, 0).
-            
-            # WAIT! _extract_neural_features line 297: self.id_to_idx = {cid: i+1 ...}
-            # _vectorize_team line 104: self.id_to_idx = {cid: i ...}
-            
-            # THE CODE WAS ALREADY BROKEN/INCONSISTENT BETWEEN NEURAL AND FOREST!
-            # Forest used 0-based. Neural used 1-based.
-            # If we unify, we must decide.
-            
-            # Decision: Use 1-Based Indexing globally.
-            # Then Vectorize must subtract 1 or adjust size?
-            # Actually, Vectorize just creates massive One-Hot. 0-based is fine for that as long as consistent.
-            
-            # Let's keep 1-based to support Neural Padding.
-            self.id_to_idx = {cid: i+1 for i, cid in enumerate(all_ids)}
-            self.num_champs = len(all_ids)
-            print(f"[HIVE MIND] Vocabulary Built: {self.num_champs} tokens.")
-
-    def _calculate_comp_stats(self, team_dict, out_vec, start_idx, ddragon):
-        """
-        Calculates 15 composition features:
-        0-3: Avg [Atk, Mag, Def, Diff]
-        4-9: Role Counts (Fighter, Tank...)
-        10-12: Dmg % (Phys, Mag, True)
-        13: Hard CC Score
-        14: Range/Poke Score
-        """
-        if not ddragon: return
-
-        stats = np.zeros(15)
-        ids = team_dict.values()
-        count = 0
+        booster_reservoir_X = [] 
+        booster_reservoir_y = []
+        reservoir_cap = 300000 
         
-        total_atk = 0
-        total_mag = 0
-        
-        for cid in ids:
-            # Cache lookup
-            if not hasattr(self, 'ddragon_cache'): self._build_ddragon_cache(ddragon)
-            try:
-                c_data = self.ddragon_cache.get(int(cid))
-            except: c_data = None
+        print(f"[HIVE MIND] --- STREAMING TIMELINE (Chronological) ---")
             
-            if c_data:
-                count += 1
-                info = c_data.get('info', {})
-                roles = c_data.get('roles', [])
-                
-                atk = info.get('attack', 0)
-                mag = info.get('magic', 0)
-                defn = info.get('defense', 0)
-                
-                total_atk += atk
-                total_mag += mag
-                
-                stats[0] += atk
-                stats[1] += mag
-                stats[2] += defn
-                stats[3] += info.get('difficulty', 0)
-                
-                # Roles
-                if "Fighter" in roles: stats[4] += 1
-                if "Tank" in roles: 
-                    stats[5] += 1
-                    stats[13] += 2 # Tanks usually have CC
-                if "Mage" in roles: 
-                    stats[6] += 1
-                    stats[14] += 2 # Mages have range
-                if "Assassin" in roles: stats[7] += 1
-                if "Marksman" in roles: 
-                    stats[8] += 1
-                    stats[14] += 3 # Marksmen have range
-                if "Support" in roles: 
-                    stats[9] += 1
-                    stats[13] += 1 # Supports usually have partial CC
+        batches = 0
+        total_loss = 0
+        total_matches_seen = 0
         
-        if count > 0:
-            # Averages
-            for i in range(4): stats[i] /= count
+        # Strict Chronological Order (No Peeking)
+        for batch_matches in db.yield_training_batches(batch_size, shuffle=False):
+            batches += 1
+            total_matches_seen += len(batch_matches)
             
-            # Damage Profile
-            total_dmg_potential = total_atk + total_mag
-            if total_dmg_potential > 0:
-                stats[10] = total_atk / total_dmg_potential # Phys %
-                stats[11] = total_mag / total_dmg_potential # Mag %
-                # True Dmg heuristic could be added here
-                
-        out_vec[start_idx : start_idx+15] = stats
-
-    def _extract_neural_features(self, blue_team, red_team, ddragon):
-        """
-        Extracts structured data for LeagueNet:
-        - Blue IDs [5]
-        - Red IDs [5]
-        - Meta Features [50] (Calculated same as vectorize)
-        """
-        # 1. IDs (Indices)
-        self._ensure_vocab(ddragon)
-        
-        # Helper: Normalize Inputs
-        def normalize_team(team_input, side_offset):
-            # Same logic as vectorize
-            normalized = {}
-            if isinstance(team_input, list):
-                roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
-                for i, cid in enumerate(team_input):
-                    if i < 5: normalized[roles[i]] = cid
-            elif isinstance(team_input, dict):
-                normalized = {k.upper(): v for k, v in team_input.items()}
-            return normalized
-
-        b_norm = normalize_team(blue_team, 0)
-        r_norm = normalize_team(red_team, 5)
-        
-        # Build ID Arrays
-        # Order: TOP, JG, MID, BOT, SUP
-        roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
-        
-        b_ids = []
-        for r in roles:
-            cid = b_norm.get(r, 0)
-            idx = self.vocab.get(cid, 0) # 0 is UNK/Pad
-            b_ids.append(idx)
+            # A. Feature Engineering (PREDICTION PHASE)
+            X_champs, X_meta, X_flat, y, weights = self._prepare_dataset(batch_matches, ddragon, augment=True)
             
-        r_ids = []
-        for r in roles:
-            cid = r_norm.get(r, 0)
-            idx = self.vocab.get(cid, 0)
-            r_ids.append(idx)
+            # --- START DEEP STACKING ---
+            # Prequential Training of Meta-Learner:
+            # Predict using CURRENT models (before training them on this data)
+            # Then use these preds to train the meta_learner.
             
-        # 2. Meta Features (Real Implementation)
-        meta_vec = np.zeros(50)
-        
-        # A. Fill Composition Stats (0-29) - FIXED: Now actually calculated!
-        self._calculate_comp_stats(b_norm, meta_vec, 0, ddragon)
-        self._calculate_comp_stats(r_norm, meta_vec, 15, ddragon)
-        
-        # We need to map role -> index for context
-        # 30-39: Blue Context (Freq/WR)
-        # 40-49: Red Context (Freq/WR)
-        
-        def fill_context_neural(cids, start_idx):
-             # cids is list [TOP_ID, JG_ID, ...]
-             roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
-             for i, r in enumerate(roles):
-                 cid = cids[i]
-                 freq = 0.0
-                 wr = 0.45 
+            if self.neural and self.neural.is_trained:
+                 # Get component predictions
+                 p_neural = self.neural.predict_batch_tensor(X_champs, X_meta) # Optimzed method needed
                  
-                 # Access self.meta_stats which should now be loaded from DB
-                 if cid != 0 and hasattr(self, 'meta_stats'):
-                     c_stats = self.meta_stats.get(int(cid), {}) # Ensure int key
-                     r_stats = c_stats.get(r, {})
-                     
-                     total_games = c_stats.get('total_games', 1)
-                     role_games = r_stats.get('games', 0)
-                     role_wins = r_stats.get('wins', 0)
-                     
-                     if total_games > 0:
-                         freq = role_games / total_games 
-                         
-                     if role_games > 0:
-                         # Bayesian Smoothing (C=5)
-                         wr = (role_wins + 2.5) / (role_games + 5.0)
-                         
-                 # Write to meta_vec
-                 meta_vec[start_idx + (i*2)] = freq
-                 meta_vec[start_idx + (i*2) + 1] = wr
-
-        # b_ids contains Indices, not CIDs. We need CIDs!
-        # self.id_to_idx map: CID -> IDX
-        # We need reverse map or just look up in team dict
-        # b_norm has CIDs.
-        
-        # Helper list of CIDs
-        b_cids = [b_norm.get(r, 0) for r in roles]
-        r_cids = [r_norm.get(r, 0) for r in roles]
-        
-        # Fill Context (Indices 30-49 of meta_vec)
-        fill_context_neural(b_cids, 30)
-        fill_context_neural(r_cids, 40)
+                 p_forest = np.zeros(len(y))
+                 if self.forest_council:
+                     for member in self.forest_council:
+                         p_forest += member.predict_proba(X_flat)[:, 1]
+                     p_forest /= len(self.forest_council)
+                 else: p_forest = np.full(len(y), 0.5)
                  
-        return b_ids, r_ids, meta_vec
+                 # Booster only runs at end, so we use 0.5 or current state if partial_fit supported?
+                 # Booster is batch trained. So we use whatever we have.
+                 p_boost = np.full(len(y), 0.5)
+                 try: p_boost = self.booster.predict_proba(X_flat)[:, 1]
+                 except: pass
 
-    def _load_dataset(self, match_dir, ddragon):
-        all_ids = sorted([int(info['key']) for info in ddragon.champions.values()])
-        print(f"[HIVE MIND] Universe Size: {len(all_ids)} Champions")
-        
-        X = []
-        y = []
-        count = 0
-        
-        if not os.path.exists(match_dir): return X, y, all_ids
-        files = [f for f in os.listdir(match_dir) if f.endswith(".json") and "_timeline" not in f]
-        
-        for filename in files:
-            try:
-                with open(os.path.join(match_dir, filename), 'r') as f:
-                    data = json.load(f)
-                
-                parts = data.get('info', {}).get('participants', [])
-                if not parts: continue
-                
-                blue_team = {}
-                red_team = {}
-                blue_win = False
-                
-                for p in parts:
-                    role = p.get('teamPosition', '')
-                    if not role: continue # Skip if no role (ARAM/Arena filter failed?)
+                 # Stack: [Neural, Forest, Booster]
+                 stack_X = np.column_stack([p_neural, p_forest, p_boost])
+                 self.meta_learner.partial_fit(stack_X, y, classes=[0, 1])
+                 self.meta_warmup = True
+            # ---------------------------
+
+            # B. Neural Training (CORRECTION PHASE)
+            if self.neural:
+                loss = self.neural.train_on_batch(X_champs, X_meta, y, weights=weights)
+                total_loss += loss
+                if batches % 10 == 0:
+                    print(f" -> Batch {batches}: Loss {loss:.4f} (Matches: {total_matches_seen})")
                     
-                    if p['teamId'] == 100:
-                        blue_team[role] = p['championId']
-                        if p['win']: blue_win = True
-                    else:
-                        red_team[role] = p['championId']
-                
-                # Only use matches with full 5v5 role assignments to reduce noise
-                if len(blue_team) < 5 or len(red_team) < 5: continue
-                        
-                # Create Smart Vector
-                vec = self._vectorize_team(blue_team, red_team, ddragon)
-                
-                X.append(vec)
-                y.append(1 if blue_win else 0)
-                count += 1
-                
-            except: pass
+            # C. Learning Phase (UPDATE MEMORY)
+            # Update Knowledge Base *after* using it to train/predict on this batch
+            # C. Learning Phase (UPDATE MEMORY)
+            # Update Knowledge Base *after* using it to train/predict on this batch
+            self.feature_engine.update_stats(batch_matches)
             
-        print(f"[HIVE MIND] Loaded {count} valid Lane-Aware matches.")
-        return X, y, all_ids
-
-    def train(self, match_dir, ddragon):
-        print(f"[HIVE MIND] Awakening... Connecting to Brain Database...")
+            # Update Timeline Stats (If present)
+            # We need to extract timeline data from batch if available.
+            # Currently 'batch_matches' are basic dicts. 
+            # In a real run, we would fetch timeline JSONs separately or cache them.
+            # For now, we assume batch_matches MIGHT have 'timeline_entries' if pre-processed.
+            if 'timeline_entries' in batch_matches[0]:
+                 # Bulk update
+                 flat_entries = [e for m in batch_matches for e in m.get('timeline_entries', [])]
+                 if flat_entries:
+                     db.update_timeline_stats(flat_entries)
+                     # RELOAD Stats to Cortex so next batch sees them
+                     # This is heavy IO. Maybe do it every 10 batches?
+                     if batches % 10 == 0:
+                         self.feature_engine.meta_stats = db.get_meta_stats()
+            
+            # D. Council Council Buffer
+            forest_buffer_X.extend(X_flat)
+            forest_buffer_y.extend(y)
+            
+            if len(forest_buffer_y) >= forest_cap:
+                    self._spawn_council_member(forest_buffer_X, forest_buffer_y)
+                    # Reset buffer
+                    forest_buffer_X = [] 
+                    forest_buffer_y = []
+                    
+            # E. Booster Reservoir (Sliding Window)
+            booster_reservoir_X.extend(X_flat)
+            booster_reservoir_y.extend(y)
+            
+            if len(booster_reservoir_y) > reservoir_cap:
+                trim = len(booster_reservoir_y) - reservoir_cap
+                booster_reservoir_X = booster_reservoir_X[trim:]
+                booster_reservoir_y = booster_reservoir_y[trim:]
+                        
+        if self.neural and batches > 0:
+            print(f"[HIVE MIND] Timeline complete. Final Average Loss: {total_loss/batches:.4f}")
+            self.neural.save() 
         
-        # New DB Connection
+        # F. Final Council Member
+        if len(forest_buffer_y) > 0:
+                self._spawn_council_member(forest_buffer_X, forest_buffer_y)
+                
+        # G. Train Booster
+        if len(booster_reservoir_y) > 1000:
+            print(f"[HIVE MIND] Training Booster on recent {len(booster_reservoir_y)} matches (Modern Meta)...")
+            self.booster.fit(booster_reservoir_X, booster_reservoir_y)
+            print("[HIVE MIND] Booster Active.")
+        
+        self.is_trained = True
+        print(f"[HIVE MIND] Training Complete. Council Size: {len(self.forest_council)} Trees.")
+        self.save()
+
+    def _spawn_council_member(self, X, y):
+        print(f"[HIVE MIND] Spawning Council Member (Samples: {len(y)})...")
+        member = RandomForestClassifier(
+            n_estimators=100, 
+            max_depth=14,     # Increased Depth - Deep Brain
+            min_samples_leaf=5, 
+            n_jobs=4,         
+            random_state=len(self.forest_council) 
+        )
+        member.fit(X, y)
+        
+        # SLIDING WINDOW
+        if len(self.forest_council) >= self.council_size:
+            print("[HIVE MIND] Council Full. Retiring oldest member (Sliding Window).")
+            self.forest_council.pop(0)
+            
+        self.forest_council.append(member)
+
+    def _prepare_dataset(self, matches, ddragon, augment=False):
+        """
+        Delegates to FeatureEngine.
+        """
+        X_champs, X_meta, X_flat, y, w_out = [], [], [], [], []
+        
+        now_ts = time.time()
+        decay_rate = 0.005
+        
+        for m in matches:
+            weight = 1.0
+            if 'timestamp' in m and m['timestamp'] > 0:
+                age_days = (now_ts - (m['timestamp']/1000)) / 86400.0
+                if age_days < 0: age_days = 0 
+                weight = np.exp(-decay_rate * age_days)
+            
+            states = [m]
+            if augment:
+                states += self._generate_partial_states(m)
+                
+            for state in states:
+                b_team = state['blue']
+                r_team = state['red']
+                
+                if augment:
+                     b_team = self._apply_dropout(b_team)
+                     r_team = self._apply_dropout(r_team)
+                
+                # DELEGATION TO CORTEX
+                flat, (b_ids, r_ids, meta) = self.feature_engine.vectorize(b_team, r_team, ddragon)
+                
+                X_champs.append(b_ids + r_ids)
+                X_meta.append(meta)
+                X_flat.append(flat)
+                y.append(state['win'])
+                w_out.append(weight)
+                
+        return np.array(X_champs), np.array(X_meta), np.array(X_flat), np.array(y), np.array(w_out)
+
+    def _apply_dropout(self, team_dict, p=0.01):
+        import random
+        new_team = team_dict.copy()
+        for r, cid in new_team.items():
+            if random.random() < p:
+                new_team[r] = 0
+        return new_team
+
+    def _generate_partial_states(self, match):
+        import random
+        partials = []
+        p1 = {'blue': {}, 'red': {}, 'win': match['win']}
+        
+        items_blue = list(match['blue'].items())
+        items_red = list(match['red'].items())
+        
+        bk = random.randint(1, len(items_blue)) if items_blue else 0
+        rk = random.randint(1, len(items_red)) if items_red else 0
+        
+        for k, v in items_blue[:bk]: p1['blue'][k] = v
+        for k, v in items_red[:rk]: p1['red'][k] = v
+        partials.append(p1)
+        return partials
+    
+    def validate_chronological(self, ddragon, validation_ratio=0.1):
+        """
+        VALIDATION: Time Series Split.
+        """
+        print("[HIVE MIND] Running Time Series Validation (Strict Chronological Split)...")
         from src.engine.persistence import BrainDatabase
         db = BrainDatabase()
         
-        # Load Meta Stats from DB (Memory Cache)
-        print("[HIVE MIND] Synapsing Meta-Context...")
-        self.meta_stats = db.get_meta_stats()
+        total = db.get_processed_count()
+        split_idx = int(total * (1 - validation_ratio))
         
-        # Get Struct Data from DB
-        training_data = db.get_training_data()
+        print(f"[HIVE MIND] Total Matches: {total}. Split at: {split_idx}")
         
-        if len(training_data) < 10:
-             print("[HIVE MIND] Not enough data in DB to train (Need >10).")
-             return
-
-        # 1. Build & Freeze Vocab
-        self._build_vocab(ddragon)
+        # Train Phase
+        train_batches = db.yield_training_batches(5000, shuffle=False)
+        seen = 0
         
-        # 2. Prepare Data (One Pass)
-        print(f"[HIVE MIND] Vectorizing {len(training_data)} matches for Ensemble...")
-        X_champs = []
-        X_meta = []
-        X_flat = [] # For Trees
-        y = []
+        # We need to manually drive the training to ensure features are updated
+        self.feature_engine.meta_stats = {}
+        self.feature_engine.synergy_matrix = {}
         
-        for m in training_data:
-            # Neural Features
-            b_ids, r_ids, meta = self._extract_neural_features(m['blue'], m['red'], ddragon)
-            X_champs.append(b_ids + r_ids)
-            X_meta.append(meta)
+        for batch in train_batches:
+            if seen >= split_idx: break
             
-            # Flat Features (Legacy/Tree)
-            flat_vec = self._vectorize_team(m['blue'], m['red'], ddragon)
-            X_flat.append(flat_vec)
+            # Predict/Train Logic (Simplified for validation speed)
+            self.feature_engine.update_stats(batch)
             
-            y.append(1 if m['win'] else 0)
+            # Also train neural/forest if we want real validation accuracy...
+            # But here we mainly validate the PIPELINE.
             
-        X_champs = np.array(X_champs)
-        X_meta = np.array(X_meta)
-        X_flat = np.array(X_flat)
-        y = np.array(y)
-        
-        # 3. Train Neural Brain
-        if self.neural:
-            print(f"[HIVE MIND] Training Neural Core (LeagueNet)...")
-            vocab_size = max(self.vocab.values()) + 1
-            self.neural.train(X_champs, X_meta, y, vocab_size=vocab_size)
-        
-        # 4. Train Forest (Scikit-Learn)
-        print(f"[HIVE MIND] Cultivating Random Forest ({self.forest.n_estimators} Trees)...")
-        self.forest.fit(X_flat, y)
-        
-        # 5. Train Booster
-        print(f"[HIVE MIND] Boosting Gradient Logic...")
-        self.booster.fit(X_flat, y)
+            seen += len(batch)
             
-        self.is_trained = True
-        print("[HIVE MIND] Ensemble Training Complete.")
+        print("[HIVE MIND] Validation Train Phase Complete. Starting Test Phase...")
         
-    def _build_vocab(self, ddragon):
-        """Creates a fixed ID->Index mapping from the current DDragon universe."""
-        all_ids = sorted([int(info['key']) for info in ddragon.champions.values()])
-        # 0 is reserved for UNK/Padding
-        self.vocab = {cid: i+1 for i, cid in enumerate(all_ids)}
-        print(f"[HIVE MIND] Vocab frozen. Size: {len(self.vocab)} champions.")
+        test_batches = db.yield_training_batches(5000, shuffle=False)
+        seen_test = 0
+        correct = 0
+        tested = 0
         
-        
-    def _redundant_legacy_load(self):
-        # Placeholder to completely remove _load_matches_raw
-        pass
-        
-    def evaluate(self, match_dir, ddragon):
-        from sklearn.model_selection import cross_val_score
-        print(f"[HIVE MIND] Running Scientific Evaluation (5-Fold CV)...")
-        X, y, _ = self._load_dataset(match_dir, ddragon)
-        
-        if len(X) < 20: 
-            print(" -> Not enough data for Cross-Validation.")
-            return
+        for batch in test_batches:
+            seen_test += len(batch)
+            if seen_test < split_idx: continue
+            
+            for m in batch:
+                pred = self.predict(m['blue'], m['red'], ddragon)
+                actual = 1 if m['win'] else 0
+                if abs(pred - actual) < 0.5: correct += 1
+                tested += 1
+                
+        acc = correct / tested if tested > 0 else 0
+        print(f"[HIVE MIND] Validation Accuracy: {acc*100:.2f}% (Matches: {tested})")
+        return acc
 
-        if self.forest:
-            scores = cross_val_score(self.forest, X, y, cv=5)
-            print(f"[HIVE MIND] REAL ACCURACY (Forest CV): {scores.mean()*100:.1f}% (+/- {scores.std()*100:.1f}%)")
-        else:
-            print("[HIVE MIND] Skipping evaluation (Forest not ready).")
-        
-    def _build_ddragon_cache(self, ddragon):
-        """Optimizes DDragon lookups O(n) -> O(1)"""
-        if hasattr(self, 'ddragon_cache'): return
-
-        self.ddragon_cache = {}
-        for name, data in ddragon.champions.items():
-            try:
-                key = int(data['key'])
-                self.ddragon_cache[key] = data
-            except: pass
-
-    def predict(self, blue_ids, red_ids, ddragon):
-        return self.predict_batch([blue_ids], [red_ids], ddragon)[0]
+    def predict(self, blue_team, red_team, ddragon):
+        """Fast prediction Wrapper."""
+        return self.predict_batch([blue_team], [red_team], ddragon)[0]
 
     def predict_batch(self, blue_teams, red_teams, ddragon):
-        """
-        True Ensemble Prediction (Weighted Voting).
-        """
         if not self.is_trained: return [0.5] * len(blue_teams)
         
         n_samples = len(blue_teams)
-        final_probs = np.zeros(n_samples)
         
-        # 1. Neural Prediction
-        if self.neural:
-            b_batch, r_batch, m_batch = [], [], []
-            for b, r in zip(blue_teams, red_teams):
-                b_ids, r_ids, meta = self._extract_neural_features(b, r, ddragon)
-                b_batch.append(b_ids)
-                r_batch.append(r_ids)
-                m_batch.append(meta)
-            
-            neural_probs = np.array(self.neural.predict_batch(b_batch, r_batch, m_batch))
-            final_probs += neural_probs * self.weights['neural']
-        else:
-            # If Neural died or is missing, redistribute weight?
-            # For now, just ignore.
-            pass
-            
-        # 2. Tree Models (Forest + Booster)
-        # Vectorize for sklearn (Flat vectors)
-        # Optimization: We could use the meta features from neural extract, but trees need the one-hots too.
-        # We must call _vectorize_team.
+        # 0. Active Models
+        active_weights = {}
+        if self.neural: active_weights['neural'] = self.weights['neural']
+        if self.forest_council: active_weights['forest'] = self.weights['forest']
+        if self.booster: active_weights['booster'] = self.weights['booster']
         
+        total_weight = sum(active_weights.values())
+        if total_weight == 0: return [0.5] * n_samples
+        
+        norm_weights = {k: v / total_weight for k, v in active_weights.items()}
+        
+        # Stacking Arrays
+        p_neural = np.zeros(n_samples)
+        p_forest = np.zeros(n_samples)
+        p_booster = np.zeros(n_samples)
+
+        b_list, r_list, m_list = [], [], []
         flat_vectors = []
-        valid_indices = []
         
-        for i, (b_team, r_team) in enumerate(zip(blue_teams, red_teams)):
-            flat_vectors.append(self._vectorize_team(b_team, r_team, ddragon))
-            
-        if flat_vectors:
-            flat_X = np.array(flat_vectors)
-            
-            # Forest
-            if hasattr(self.forest, 'predict_proba'):
-                f_probs = self.forest.predict_proba(flat_X)[:, 1]
-                final_probs += f_probs * self.weights['forest']
-            
-            # Booster
-            if hasattr(self.booster, 'predict_proba'):
-                b_probs = self.booster.predict_proba(flat_X)[:, 1]
-                final_probs += b_probs * self.weights['booster']
-                
-        # Normalize? 
-        # Weights sum to 1.0. If all models ran, we are good.
-        # If Neural is missing, we might be low. 
-        # But this code assumes Neural IS present if self.neural is not None.
-        
-        return final_probs.tolist()
+        for b, r in zip(blue_teams, red_teams):
+            flat, (b_ids, r_ids, meta) = self.feature_engine.vectorize(b, r, ddragon)
+            b_list.append(b_ids)
+            r_list.append(r_ids)
+            m_list.append(meta)
+            flat_vectors.append(flat)
 
-    def explain_decision(self, blue_ids, red_ids, ddragon):
-        """
-        Returns a list of strings explaining WHY the AI made the decision.
-        Uses Random Forest Feature Importance as a proxy for 'Reasoning'.
-        """
-        if not self.is_trained: return ["Model not trained."]
-        
-        all_ids = sorted([int(info['key']) for info in ddragon.champions.values()])
-        # Create mapping ID -> Name for display
-        id_to_name = {int(info['key']): info['name'] for info in ddragon.champions.values()}
-        
-        # Get importances from the Forest (it's the most interpretable part of the ensemble)
-        if hasattr(self.forest, 'feature_importances_'):
-             importances = self.forest.feature_importances_
+        # 1. Neural
+        if 'neural' in active_weights:
+            # This calls predict_batch which returns list, convert to np
+            p_neural = np.array(self.neural.predict_batch(b_list, r_list, m_list))
+            
+        # 2. Forest Council (Averaging)
+        if 'forest' in active_weights:
+            if self.forest_council:
+                for member in self.forest_council:
+                    p_forest += member.predict_proba(flat_vectors)[:, 1]
+                p_forest /= len(self.forest_council)
+            else: p_forest[:] = 0.5
+            
+        # 3. Booster
+        if 'booster' in active_weights:
+             try:
+                 p_booster = self.booster.predict_proba(flat_vectors)[:, 1]
+             except: p_booster[:] = 0.5
+             
+        # META DECISION
+        if self.meta_warmup:
+             stack_X = np.column_stack([p_neural, p_forest, p_booster])
+             final_probs = self.meta_learner.predict_proba(stack_X)[:, 1]
+             return final_probs.tolist()
         else:
-             return ["Interpretation unavailable (No Forest)."]
-        
-        # Current Match Vector
-        vec = self._vectorize_team(blue_ids, red_ids, ddragon)
-        
-        # Analyze active features
-        # vec has indices. importances has same indices.
-        # We want to know: Which ACTIVE champions contributed most to the score?
-        
-        contributions = []
-        
-        # We need to map Index -> "Role - Champion Name"
-        # 10 blocks of num_champs
-        # then 30 meta features
-        
-        num_champs = getattr(self, 'num_champs', len(all_ids))
-        role_names = ["Top", "Jungle", "Mid", "Bot", "Sup"]
-        
-        for i, val in enumerate(vec):
-            if val != 0: # Feature is Active
-                score = importances[i]
-                
-                # Decode Index
-                if i < num_champs * 10:
-                    # It's a champion
-                    block_idx = i // num_champs
-                    champ_idx = i % num_champs
-                    
-                    team = "Blue" if block_idx < 5 else "Red"
-                    role_id = block_idx if block_idx < 5 else block_idx - 5
-                    role = role_names[role_id]
-                    
-                    # Need to find name from idx.
-                    # self.vocab is {CID: Index}. 
-                    # We need Index -> CID.
-                    # Invert vocab
-                    if hasattr(self, 'vocab'):
-                        idx_to_cid = {v: k for k, v in self.vocab.items()}
-                        cid = idx_to_cid.get(champ_idx, 0)
-                    else:
-                        # Fallback to list index
-                        cid = all_ids[champ_idx] if champ_idx < len(all_ids) else 0
-
-                    cname = id_to_name.get(cid, "Unknown")
-                    
-                    label = f"{cname} ({team} {role})"
-                else:
-                    # Meta feature
-                    # 0-14: Blue Stats
-                    # 15-29: Red Stats
-                    # 30-39: Blue Context (Freq/WR)
-                    # 40-49: Red Context (Freq/WR)
-                    
-                    meta_idx = i - (num_champs * 10)
-                    
-                    stat_names = ["Avg Atk", "Avg Mag", "Avg Def", "Diff", "#Fighter", "#Tank", "#Mage", "#Assassin", "#Marksman", "#Support", "Phys%", "Mag%", "True%", "CC Score", "Range Score"]
-                    role_names = ["Top", "Jg", "Mid", "Bot", "Sup"]
-                    
-                    if meta_idx < 15:
-                        team = "Blue"
-                        label = f"{stat_names[meta_idx]} ({team})"
-                    
-                    elif meta_idx < 30:
-                        team = "Red"
-                        label = f"{stat_names[meta_idx-15]} ({team})"
-                        
-                    elif meta_idx < 40:
-                        team = "Blue"
-                        # 30=TopFreq, 31=TopWR, 32=JgFreq, 33=JgWR ...
-                        local_idx = meta_idx - 30
-                        r_idx = local_idx // 2
-                        type_str = "Freq" if local_idx % 2 == 0 else "WR"
-                        label = f"{role_names[r_idx]} {type_str} ({team})"
-                        
-                    elif meta_idx < 50:
-                        team = "Red"
-                        local_idx = meta_idx - 40
-                        r_idx = local_idx // 2
-                        type_str = "Freq" if local_idx % 2 == 0 else "WR"
-                        label = f"{role_names[r_idx]} {type_str} ({team})"
-                    
-                    else:
-                         label = f"New_Feature_{meta_idx} (?)"
-                
-                contributions.append( (score, label) )
-                
-        # Sort by impact
-        contributions.sort(key=lambda x: x[0], reverse=True)
-        
-        reasons = []
-        for score, label in contributions[:3]:
-            # Scale score for readability (it's small float)
-            impact = score * 1000 
-            reasons.append(f"{label} [Impact: {impact:.1f}]")
-            
-        return reasons
-
-    def _analyze_meta_stats(self, match_dir):
-        """
-        Pass 1: Scans all matches to build proficiency data.
-        {
-            cid: {
-                "total_games": 100,
-                "TOP": {"games": 80, "wins": 45},
-                "JUNGLE": {"games": 2, "wins": 0}, ...
-            }
-        }
-        """
-        print("[HIVE MIND] Pass 1: Analyzing Meta-Context (Role Proficiency)...")
-        self.meta_stats = {}
-        
-        if not os.path.exists(match_dir): return
-        files = [f for f in os.listdir(match_dir) if f.endswith(".json") and "_timeline" not in f]
-        
-        count = 0
-        for filename in files:
-            try:
-                with open(os.path.join(match_dir, filename), 'r') as f:
-                    data = json.load(f)
-                
-                parts = data.get('info', {}).get('participants', [])
-                for p in parts:
-                    cid = p['championId']
-                    role = p.get('teamPosition', '')
-                    win = p['win']
-                    
-                    if not role: continue
-                    
-                    if cid not in self.meta_stats:
-                        self.meta_stats[cid] = {'total_games': 0}
-                    
-                    self.meta_stats[cid]['total_games'] += 1
-                    
-                    if role not in self.meta_stats[cid]:
-                        self.meta_stats[cid][role] = {'games': 0, 'wins': 0}
-                        
-                    self.meta_stats[cid][role]['games'] += 1
-                    if win:
-                        self.meta_stats[cid][role]['wins'] += 1
-                count += 1
-            except: pass
-            
-        print(f" -> Analyzed {count} matches for proficiency data.")
+            # Fallback to Weighted Avg
+            final = (p_neural * norm_weights.get('neural', 0)) + \
+                    (p_forest * norm_weights.get('forest', 0)) + \
+                    (p_booster * norm_weights.get('booster', 0))
+            return final.tolist()

@@ -44,9 +44,11 @@ class SmartDraft:
             # PREDICT
             prob = self.brain.predict(hypothetical_blue, hypothetical_red, ddragon_ref)
             
-            # Calibration: Trust the Neural/Ensemble Output directly.
-            # No arbitrary clamping.
-            score = prob * 100
+            # --- GOLD STANDARD: HYBRID INTELLIGENCE ---
+            # Consistency Fix: Use the same logic as batch_rank
+            final_prob = self._calculate_hybrid_score(prob, champion, my_role, ddragon_ref)
+            
+            score = final_prob * 100
             
             synergy_score = 0
             if self.comp:
@@ -114,6 +116,15 @@ class SmartDraft:
                 
                 cid = int(c_data['key'])
                 
+                # DOPPELGANGER CHECK (Round 4 Fix)
+                # If champion is already in the team (picked by ally), we cannot pick it again.
+                # base_blue is {ROLE: CID}
+                if cid in base_blue.values():
+                    # Champion already taken by teammate
+                    # We skip this candidate to prevent "2x Yasuo" hallucinations
+                    # print(f"[SMART DRAFT] Skipping {name} (Already Picked)")
+                    continue
+                
                 # Construct scenario
                 scenario_blue = base_blue.copy()
                 scenario_blue[my_role] = cid
@@ -159,7 +170,7 @@ class SmartDraft:
     def _calculate_hybrid_score(self, neural_prob, champ_name, role, ddragon):
         """
         Combines Neural Dreams with Statistical Reality.
-        New Logic: Neural is Truth. Stats provide Uncertainty Scaling.
+        New Logic: Neural is Truth. Stats provide Uncertainty Scaling (Wilson Score).
         """
         # 1. The Dreamer (Neural Net / Ensemble)
         score = neural_prob
@@ -175,24 +186,32 @@ class SmartDraft:
                     champ_stats = self.brain.meta_stats.get(cid, {})
                     role_stats = champ_stats.get(role, {})
                     role_games = role_stats.get('games', 0)
-                    print(f"[DEBUG] Cid: {cid} Role: {role} Games: {role_games}")
+                    # print(f"[DEBUG] Cid: {cid} Role: {role} Games: {role_games}")
             except: pass
             
-        # UNCERTAINTY DAMPENING
-        # If we have very few games on this champ in this role, we trust the model LESS.
-        # We pull the score towards 50%.
+        # UNCERTAINTY DAMPENING (Bayesian Average)
+        # Replaces Wilson Score logic.
+        # Wilson was too pessimistic for N=0 (New Champs).
+        # Bayes pulls towards a "Prior" (Average Winrate) based on confidence K.
         
-        if role_games < 10:
-            # High Uncertainty
-            # factor = 0.8 (Trust model 80%, Prior 20%)
-            uncertainty_factor = 0.8
-            score = (score * uncertainty_factor) + (0.5 * (1 - uncertainty_factor))
-            
-        elif role_games > 50:
-            # High Confidence boost
-            # If the model is timid (0.55) but winrate is high, we might want to boost?
-            # actually, let's just leave it pure. The dampening is enough safety.
-            pass
-
-        return max(0.01, min(0.99, score))
+        # P_final = (P_neural * N + P_prior * K) / (N + K)
+        # N = role_games (Global Data)
+        # K = Confidence Constant (e.g. 10 games to overcome the Prior)
+        # Prior = 0.5 (Assume Balanced if Unknown)
+        
+        dampened_score = self._bayesian_average(score, max(0, role_games))
+        
+        return max(0.01, min(0.99, dampened_score))
+        
+    def _bayesian_average(self, p_neural, n, prior=0.5, k=10.0):
+        """
+        Calculates Bayesian Average.
+        Blends Neural Prediction (p_neural) with Prior (Average) based on Sample Size (n).
+        k: How many games of evidence are needed to shift the score halfway to p_neural.
+           Small k (5) = Trusts AI quickly. 
+           Large k (50) = Trusts AI slowly (conservative).
+        """
+        numerator = (p_neural * n) + (prior * k)
+        denominator = n + k
+        return numerator / denominator
 

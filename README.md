@@ -1,9 +1,9 @@
-# VANTAGE v1.1
-> **VANTAGE: An advanced Neural-Symbolic drafting engine for League of Legends, utilizing deep entity embeddings and real-time inference.**
+# VANTAGE v1.2: AI Coaching Evolved
+> **VANTAGE: An advanced Neural-Symbolic drafting engine for League of Legends, utilizing deep entity embeddings, timeline analysis, and real-time inference.**
 
-![Build Status](https://img.shields.io/badge/build-passing-brightgreen) ![Python](https://img.shields.io/badge/python-3.14-blue) ![PyTorch](https://img.shields.io/badge/core-PyTorch_CUDA-orange) ![Status](https://img.shields.io/badge/status-Gold_Standard-gold)
+![Build Status](https://img.shields.io/badge/build-passing-brightgreen) ![Python](https://img.shields.io/badge/python-3.14-blue) ![PyTorch](https://img.shields.io/badge/core-PyTorch_CUDA-orange) ![Feature](https://img.shields.io/badge/feature-Timeline_DNA-purple)
 
-**VANTAGE** is not just a stats overlay. It is a neural-enhanced co-pilot that fuses Deep Learning (`LeagueNet`), Statistical Rigor (Wilson Score), and Real-Time LCU Data to provide tactical dominance in Champion Select.
+**VANTAGE** is not just a stats overlay. It is a neural-enhanced co-pilot that fuses Deep Learning (`LeagueNet`), Match Timelines (`Course Chronos`), and Real-Time LCU Data to provide tactical dominance in Champion Select.
 
 ---
 
@@ -12,13 +12,15 @@
 The system operates on a Hybrid Intelligence architecture designed to handle millions of data points while delivering sub-millisecond inference.
 
 ### 1. The Dreamer (LeagueNet)
-*   **Tech:** PyTorch Deep Feed-Forward Network.
-*   **Logic:** Uses 16-dimensional **Entity Embeddings** to "intuit" champion synergies without explicit rules. It understands that *Yasuo* needs *Knockups* not because we told it, but because it learned from 500,000+ matches.
-*   **Performance:** GPU-Accelerated Tensor Batching allows evaluating 165+ draft scenarios instantly.
+*   **Tech:** PyTorch Deep Feed-Forward Network (82 Dim Inputs).
+*   **Logic:** Uses **Entity Embeddings** to "intuit" champion synergies without explicit rules. It understands that *Yasuo* needs *Knockups* not because we told it, but because it learned from 500,000+ matches.
 
-### 2. The Realist (Statistical Anchor)
-*   **Tech:** Weighted Wilson Score Interval.
-*   **Logic:** Prevents "Small Sample Size Hallucinations". A champion with 100% winrate in 1 game will correctly rank below a champion with 55% winrate in 10,000 games.
+### 2. The Time Lord (Project Chronos)
+*   **Tech:** Timeline Engine (`src/engine/timeline.py`).
+*   **Logic:** Extracts **Temporal DNA** from every match.
+    *   **Tempo Score:** Analyzes Gold@15 to identify early-game stompers.
+    *   **Snowball Index:** Calculates probability of victory given a small lead.
+    *   **Comeback Factor:** Identifies scaling champions who win from behind.
 
 ### 3. The Core (Data Engine)
 *   **Storage:** SQLite with WAL (Write-Ahead-Logging) for concurrent read/write operations.
@@ -26,22 +28,22 @@ The system operates on a Hybrid Intelligence architecture designed to handle mil
 
 ---
 
-## 🛠 Tech Stack
+## 📂 Project Structure
 
-*   **Brain:** Python 3.14, PyTorch, Scikit-Learn, NumPy.
-*   **Body:** Electron, React, Vite (Glassmorphism UI).
-*   **Spine:** Flask (Local API), SQLite (Persistence).
-*   **Nerves:** LCU Connector (WebSockets).
+*   `src/`: Core logic (Brain, Crawler, Server).
+*   `tests/`: Comprehensive unit and integration tests.
+*   `tools/`: Utility scripts for maintenance and debugging.
+*   `overlay/`: Electron/React Frontend.
 
 ## 🚀 Getting Started
 
 ### Prerequisites
 *   Python 3.14+
 *   Node.js & NPM
-*   NVIDIA GPU (Recommended for Neural Training)
+*   NVIDIA GPU (Recommended)
 
 ### Installation
-1.  **Clone the Repo** (Private Access Only)
+1.  **Clone the Repo**
     ```bash
     git clone https://github.com/Start-Vantage/vantage-core.git
     cd vantage-core

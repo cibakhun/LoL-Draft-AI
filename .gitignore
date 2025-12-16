@@ -1,7 +1,7 @@
 # Secrets (CRITICAL)
 .env
 .env.local
-secrets.json
+apikey.txt
 
 # Database & Large Data
 brain.db
@@ -10,13 +10,11 @@ brain.db-wal
 *.db
 *.sqlite3
 brain.joblib
+brain_cortex.pkl
 *.pt
-tests/temp_brain_test/
-
-# Legacy & Backups
-legacy_backup/
-match_archive/
 src/data/matches/
+
+# Caches & Queues
 discovery_queue.json
 processed_matches.json
 meta_cache.json
@@ -25,27 +23,22 @@ player_cache.json
 # Python
 __pycache__/
 *.py[cod]
-*$py.class
 venv/
-env/
 .venv/
+.pytest_cache/
 
-# IDE / Editor
-.vscode/
-.idea/
-*.swp
-
-# OS
-Thumbs.db
-Desktop.ini
-
-# JS / Frontend
-node_modules/
-overlay/node_modules/
-dist/
-build/
-.output/
-
-# Logs
+# Logs & Temporary
+logs/
 *.log
 status_dump.json
+tools/collected_matches/
+collected_matches/
+
+# Build
+build/
+dist/
+*.spec
+
+# IDE
+.vscode/
+.idea/
