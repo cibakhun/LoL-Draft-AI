@@ -3,3 +3,6 @@ pandas
 scikit-learn
 lcu-driver
 python-dotenv
+torch
+numpy
+pydantic

@@ -1,44 +1,66 @@
-# Secrets (CRITICAL)
-.env
-.env.local
-apikey.txt
-
-# Database & Large Data
-brain.db
-brain.db-shm
-brain.db-wal
-*.db
-*.sqlite3
-brain.joblib
-brain_cortex.pkl
-*.pt
-src/data/matches/
-
-# Caches & Queues
-discovery_queue.json
-processed_matches.json
-meta_cache.json
-player_cache.json
-
-# Python
+# --- Python ---
 __pycache__/
-*.py[cod]
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
 venv/
 .venv/
-.pytest_cache/
+pip-log.txt
+pip-delete-this-directory.txt
 
-# Logs & Temporary
-logs/
-*.log
-status_dump.json
-tools/collected_matches/
-collected_matches/
-
-# Build
-build/
+# --- Node.js ---
+node_modules/
 dist/
-*.spec
+build/
+.output/
 
-# IDE
+# --- Secrets ---
+.env
+.env.local
+
+# --- Windows ---
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- VS Code ---
 .vscode/
+*.code-workspace
+
+# --- JetBrains ---
 .idea/
+*.iml
+
+# --- Project Specific Virtual Env (Root) ---
+Lib/
+Scripts/
+pyvenv.cfg
+share/
+include/
+
+# --- Large Data Files & ML Artifacts ---
+*.db
+checkpoints/
+src/tools/brain.db
+src/engine/brain_v2.db
+
+# --- Data Directory (Keep scripts, ignore data) ---
+src/data/matches/
+src/data/cache_dd/
+src/data/item_metrics.json
+src/data/lane_metrics.json
+
+# --- Assets ---
+assets/
+src/interface/assets/
+
+# --- Logs & Backups ---
+*.log
+_BACKUP*/
+_LEGACY_BACKUP*/
+
+# --- Custom Ignores ---
+overlay/
+idea/
