@@ -2,6 +2,7 @@ import numpy as np
 import json
 import os
 import joblib
+from src.engine.schema import FeatureConfig as Cfg, RomanScaler
 
 class FeatureEngine:
     """
@@ -16,20 +17,35 @@ class FeatureEngine:
         # Meta Stats: { cid: { role: { games, wins, timeline: {...} }, total_games } }
         self.meta_stats = {} 
         
-        # Synergy Matrix: { cid1: { cid2: { games, wins } } } (Teammates)
-        self.synergy_matrix = {}
+        # Synergy Matrix: REMOVED (Scalability)
+        # Counter Matrix: REMOVED (Scalability)
+        # Power Spike Stats: REMOVED (Scalability)
         
-        # Counter Matrix: { cid1: { cid2: { games, wins } } } (Opponents)
-        # Tracks how cid1 performs AGAINT cid2
-        self.counter_matrix = {}
-        
-        # Power Spike Stats: { cid: { 'early': {g,w}, 'mid': {g,w}, 'late': {g,w} } }
-        self.spike_stats = {}
+        # In-Memory Timeline Stats (Approximations) so we don't rely on DB Future Data
+        self.timeline_memory = {}
         
         self.ddragon_cache = {}
         
+        # Vocabularies
+        self.item_vocab = {} 
+        self.rune_vocab = {} # Future proofing
+        
+        # Internal State
+        self.frozen = False # If True, statistical models (Meta/Synergy) will NOT update.
+        
     def set_vocab(self, vocab):
         self.vocab = vocab
+        
+    def set_frozen(self, frozen=True):
+        """
+        Freezes the 'World Knowledge' to prevent Data Leakage during training.
+        When frozen, update_stats() becomes a no-op.
+        """
+        self.frozen = frozen
+        if frozen:
+            print("[CORTEX] FeatureEngine is now FROZEN. No new stats will be learned.")
+        else:
+            print("[CORTEX] FeatureEngine is UN-FROZEN. Learning active.")
         
     def build_vocab(self, ddragon):
         """Builds vocab from DDragon if not already present."""
@@ -42,12 +58,56 @@ class FeatureEngine:
         except Exception as e:
             print(f"[CORTEX] Vocab Build Error: {e}")
 
+    def build_item_vocab(self, ddragon):
+        """Builds item vocab from DDragon."""
+        if self.item_vocab: return
+        try:
+            # DDragon items are dict of {id: data}
+            if hasattr(ddragon, 'items'):
+                all_ids = sorted([int(k) for k in ddragon.items.keys()])
+                # 0 is "Empty Item"
+                self.item_vocab = {iid: i+1 for i, iid in enumerate(all_ids)}
+                print(f"[CORTEX] Item Vocab Built: {len(self.item_vocab)} items.")
+        except Exception as e:
+            print(f"[CORTEX] Item Vocab Build Error: {e}")
+
+    def build_rune_vocab(self, ddragon):
+        """Builds rune vocab (Keystones + Secondary Trees)."""
+        if self.rune_vocab: return
+        try:
+            # DDragon runesReforged is a list of trees (Domination, Precision, etc.)
+            # Each tree has 'slots', each slot has 'runes'
+            if hasattr(ddragon, 'runes'):
+                all_runes = []
+                # Traverse the trees
+                for tree in ddragon.runes:
+                    # Tree ID itself (e.g. 8000 for Precision) is sometimes a feature
+                    all_runes.append(int(tree['id']))
+                    for slot in tree.get('slots', []):
+                        for rune in slot.get('runes', []):
+                            all_runes.append(int(rune['id']))
+                
+                # Sort for deterministic index
+                sorted_ids = sorted(list(set(all_runes)))
+                self.rune_vocab = {rid: i+1 for i, rid in enumerate(sorted_ids)}
+                print(f"[CORTEX] Rune Vocab Built: {len(self.rune_vocab)} runes.")
+        except Exception as e:
+            print(f"[CORTEX] Rune Vocab Build Error: {e}")
+
     def update_stats(self, matches):
         """
         Incrementally updates internal knowledge (Winrates, Synergies, Counters, Spikes).
         CRITICAL: This must be called AFTER prediction/training on a batch to avoid leaks.
         """
+        if self.frozen: return
+
+        # Optimization: Pre-allocate batch updates if possible
+        # For now, we stick to the loop but ensure it respects 'frozen' state.
+        
         for m in matches:
+            # SAFETY CHECK: Do not learn from incomplete matches or validation set if flagged
+            # We assume 'matches' passed here are valid for learning (Training Set).
+            
             win = 1 if m['win'] else 0
             duration = m.get('duration', 0) # Seconds
             
@@ -55,17 +115,14 @@ class FeatureEngine:
             self._update_team_stats(m['blue'], win)
             self._update_team_stats(m['red'], 0 if win else 1)
             
-            # 2. Update Synergy (Duo) Stats
-            self._update_synergy(m['blue'], win)
-            self._update_synergy(m['red'], 0 if win else 1)
-            
-            # 3. Update Counter Stats (Blue vs Red)
-            self._update_counters(m['blue'], m['red'], win)
-            
-            # 4. Update Power Spikes
+            # Synergy/Counter/Spike updates removed for Scalability.
+            # TitanNet learns these via Attention.
+
+            # 5. Update Timeline Memory (In-Memory Approximation)
             if duration > 0:
-                self._update_spikes(m['blue'], win, duration)
-                self._update_spikes(m['red'], 0 if win else 1, duration)
+                self._update_timeline_memory(m['blue'], win, duration, m.get('blue_gold_diff_15', 0))
+                # For Red, the gold diff is inverted
+                self._update_timeline_memory(m['red'], 0 if win else 1, duration, -m.get('blue_gold_diff_15', 0))
 
     def _update_team_stats(self, team_dict, win):
         for role, cid in team_dict.items():
@@ -84,67 +141,44 @@ class FeatureEngine:
             self.meta_stats[cid][role]['games'] += 1
             self.meta_stats[cid][role]['wins'] += win
 
-    def _update_synergy(self, team_dict, win):
-        """Updates O(N^2) synergy matrix for the team."""
-        cids = []
-        for r, c in team_dict.items():
-            try: cids.append(int(c))
-            except: pass
-            
-        for i in range(len(cids)):
-            for j in range(i+1, len(cids)):
-                c1, c2 = cids[i], cids[j]
-                if c1 == 0 or c2 == 0: continue
-                
-                self._record_interaction(self.synergy_matrix, c1, c2, win)
-                self._record_interaction(self.synergy_matrix, c2, c1, win)
+    # Removed _update_synergy, _update_counters, _record_interaction, _update_spikes to prevent OOM
 
-    def _update_counters(self, blue_dict, red_dict, blue_win):
-        """
-        Updates Counter Matrix.
-        Blue Win = 1 -> Blue Champs get 'Win' vs Red Champs.
-        """
-        b_cids = [int(c) for c in blue_dict.values() if int(c) != 0]
-        r_cids = [int(c) for c in red_dict.values() if int(c) != 0]
-        
-        # Cross Product
-        for b in b_cids:
-            for r in r_cids:
-                # Record Blue vs Red
-                self._record_interaction(self.counter_matrix, b, r, blue_win)
-                # Record Red vs Blue (inverse result)
-                self._record_interaction(self.counter_matrix, r, b, 0 if blue_win else 1)
-
-    def _record_interaction(self, matrix, c1, c2, win):
-        if c1 not in matrix: matrix[c1] = {}
-        if c2 not in matrix[c1]: matrix[c1][c2] = {'games': 0, 'wins': 0}
-        
-        matrix[c1][c2]['games'] += 1
-        matrix[c1][c2]['wins'] += win
-
-    def _update_spikes(self, team_dict, win, duration):
-        # Buckets: Early (<25m), Mid (25-35m), Late (>35m)
-        bucket = 'early'
-        if duration > 2100: bucket = 'late'
-        elif duration > 1500: bucket = 'mid'
+    def _update_timeline_memory(self, team_dict, win, duration, gold_diff_15=0):
+        is_short = duration < 1500 # 25m
+        is_long = duration > 2100 # 35m
         
         for cid in team_dict.values():
-            cid = int(cid)
+            try: cid = int(cid)
+            except: continue
             if cid == 0: continue
             
-            if cid not in self.spike_stats:
-                self.spike_stats[cid] = {
-                    'early': {'games': 0, 'wins': 0},
-                    'mid': {'games': 0, 'wins': 0},
-                    'late': {'games': 0, 'wins': 0}
+            if cid not in self.timeline_memory:
+                self.timeline_memory[cid] = {
+                    'games': 0, 'wins': 0,
+                    'short_games': 0, 'short_wins': 0, # Snowball proxy
+                    'long_games': 0, 'long_wins': 0,    # Scaling proxy
+                    'total_gold_diff_15': 0, 'gold_diff_count': 0
                 }
             
-            self.spike_stats[cid][bucket]['games'] += 1
-            self.spike_stats[cid][bucket]['wins'] += win
+            s = self.timeline_memory[cid]
+            s['games'] += 1
+            s['wins'] += win
+            
+            if is_short:
+                s['short_games'] += 1
+                s['short_wins'] += win
+                
+            if is_long:
+                s['long_games'] += 1
+                s['long_wins'] += win
+            
+            if gold_diff_15 != 0:
+                s['total_gold_diff_15'] += gold_diff_15
+                s['gold_diff_count'] += 1
 
-    def vectorize(self, blue_team, red_team, ddragon=None):
+    def vectorize(self, blue_team, red_team, ddragon=None, update_scalars=False, training_mode=False):
         """
-        Main Vectorization Entry Point. (Deep Update)
+        Main Vectorization Entry Point.
         Returns: 
          - flat_vec: Numpy array (High Dim)
          - neural_payload: Tuple (blue_ids, red_ids, meta_vec)
@@ -159,55 +193,42 @@ class FeatureEngine:
         b_ids = self._get_id_list(b_norm)
         r_ids = self._get_id_list(r_norm)
         
-        # Meta Features: 72 Dimensions
-        # 0-14: Blue Comp (15)
-        # 15-29: Red Comp (15)
-        # 30-39: Blue Role Mastery (10)
-        # 40-49: Red Role Mastery (10)
-        # 50-54: Blue Synergy (5)
-        # 55-59: Red Synergy (5)
-        # 60-62: Blue Power Spike (3)
-        # 63-65: Red Power Spike (3)
-        # 66-70: Lane Counters (5)
-        # 71: Team Counter Score (1)
-        # NEW (Project Chronos): 10 Dimensions
-        # 72-76: Blue Timeline (Tempo, Snowball, Comeback, EarlyLead, Diff)
-        # 77-81: Red Timeline
+        # Use FeatureConfig for Size
+        meta_vec = np.zeros(Cfg.TOTAL_DIM)
         
-        meta_vec = np.zeros(82) # INCREASED DIMENSION
+        # 1. Comp Stats
+        self._fill_comp_stats(b_norm, meta_vec, Cfg.BLUE_COMP_START)
+        self._fill_comp_stats(r_norm, meta_vec, Cfg.RED_COMP_START)
         
-        self._fill_comp_stats(b_norm, meta_vec, 0)
-        self._fill_comp_stats(r_norm, meta_vec, 15)
+        # 2. Context Stats (Winrates etc)
+        self._fill_context_stats(b_norm, meta_vec, Cfg.BLUE_CONTEXT_START)
+        self._fill_context_stats(r_norm, meta_vec, Cfg.RED_CONTEXT_START)
         
-        self._fill_context_stats(b_norm, meta_vec, 30)
-        self._fill_context_stats(r_norm, meta_vec, 40)
+        # 3. Synergy
+        self._fill_synergy_stats(b_norm, meta_vec, Cfg.BLUE_SYNERGY_START)
+        self._fill_synergy_stats(r_norm, meta_vec, Cfg.RED_SYNERGY_START)
         
-        self._fill_synergy_stats(b_norm, meta_vec, 50)
-        self._fill_synergy_stats(r_norm, meta_vec, 55)
+        # 4. Spikes
+        self._fill_spike_stats(b_norm, meta_vec, Cfg.BLUE_SPIKE_START)
+        self._fill_spike_stats(r_norm, meta_vec, Cfg.RED_SPIKE_START)
         
-        # Power Spikes
-        self._fill_spike_stats(b_norm, meta_vec, 60)
-        self._fill_spike_stats(r_norm, meta_vec, 63)
-        
-        self._fill_counter_stats(b_norm, r_norm, meta_vec, 66)
+        # 5. Counters
+        self._fill_counter_stats(b_norm, r_norm, meta_vec, Cfg.COUNTER_START)
 
-        # Timeline Stats
-        self._fill_timeline_stats(b_norm, meta_vec, 72)
-        self._fill_timeline_stats(r_norm, meta_vec, 77)
+        # 6. Timeline
+        self._fill_timeline_stats(b_norm, meta_vec, Cfg.BLUE_TIMELINE_START, training_mode)
+        self._fill_timeline_stats(r_norm, meta_vec, Cfg.RED_TIMELINE_START, training_mode)
         
         # --- DEEP CORRECTNESS: SCALING ---
-        # Neural Networks struggle with mixed scales (e.g. 0.5 vs 40.0).
-        # We perform hard normalization to [0, 1] range based on theoretical max values.
-        self._scale_meta_features(meta_vec)
+        # Fixed Roman Scaler
+        RomanScaler.scale(meta_vec)
         
         neural_payload = (b_ids, r_ids, meta_vec)
         
         # --- Flat Vector ---
         vocab_size = max(self.vocab.values()) + 1 if self.vocab else 170
         stride = vocab_size
-        vocab_size = max(self.vocab.values()) + 1 if self.vocab else 170
-        stride = vocab_size
-        input_size = (stride * 10) + 82 # INCREASED
+        input_size = (stride * 10) + Cfg.TOTAL_DIM
         
         flat_vec = np.zeros(input_size)
         
@@ -223,173 +244,55 @@ class FeatureEngine:
                 idx = ((role_map[role] + 5) * stride) + self.vocab.get(cid, 0)
                 if idx < input_size: flat_vec[idx] = 1
                 
-        flat_vec[-82:] = meta_vec
+        flat_vec[-Cfg.TOTAL_DIM:] = meta_vec
         
         return flat_vec, neural_payload
 
-    def _scale_meta_features(self, vec):
-        """
-        Scales the 72-dim meta vector to roughly [0, 1].
-        """
-        # Blue (0-14) and Red (15-29)
-        for base in [0, 15]:
-            # 0-3: Sums (Atk, Mag, Def, Diff). Max ~50.
-            vec[base+0] /= 50.0
-            vec[base+1] /= 50.0
-            vec[base+2] /= 50.0
-            vec[base+3] /= 50.0
-            
-            # 4-9: Class Counts. Max 5.
-            for i in range(4, 10):
-                vec[base+i] /= 5.0
-                
-            # 10-11: Ratios (Already 0-1)
-            
-            # 12: Unused (Reserved)
-            
-            # 13: Tank Score (Max ~15). 5 Tanks * 3 ? Code says Tank+2, Supp+1. Max 5*2 = 10.
-            vec[base+13] /= 15.0
-            
-            # 14: Carry Score. Mage+2, Marksman+3. Max 5*3 = 15.
-            vec[base+14] /= 15.0
-
-            # 14: Carry Score. Mage+2, Marksman+3. Max 5*3 = 15.
-            vec[base+14] /= 15.0
-
-        # 30-71 are already Winrates/Frequencies (0-1)
-        
-        # 72-81: Timeline Metrics
-        # Tempo (Gold Diff) is usually -2000 to +2000. Scale by 2000.
-        for i in [72, 76, 77, 81]: # Indices of Gold/Diff if aligned? 
-            # Actually indices are:
-            # 72, 73, 74, 75, 76 (Blue)
-            # 77, 78, 79, 80, 81 (Red)
-            # 0=Tempo(Gold), 1=Snowball, 2=Comeback, 3=Leads, 4=XP/Diff
-            pass # We handle scaling inside _fill_timeline_stats for clarity
-
-    def _fill_timeline_stats(self, team_norm, vec, start_idx):
+    def _fill_timeline_stats(self, team_norm, vec, start_idx, training_mode=False):
         """
         Extracts Temporal DNA.
-        0: Avg Tempo (Gold@15) - Scaled / 2000
-        1: Snowball Efficiency (Winrate when Ahead)
-        2: Comeback Potential (Winrate when Behind)
-        3: Early Game Aggression (Frequency of Lead@15)
-        4: Lane Dominance (XP Diff) - Scaled / 1000
         """
         gold_diffs = []
         snowball_rates = []
         comeback_rates = []
-        lead_freqs = []
-        xp_diffs = []
         
         for role, cid in team_norm.items():
-            if cid in self.meta_stats and role in self.meta_stats[cid]:
-                s = self.meta_stats[cid][role].get('timeline', {})
-                gold_diffs.append(s.get('avg_gold_15', 0))
-                snowball_rates.append(s.get('snowball_rate', 0.5))
-                comeback_rates.append(s.get('comeback_rate', 0.5))
-                
-                # Check raw games to calc lead freq?
-                # We need leads / total_games
-                if 'total_games' in self.meta_stats[cid]: # total_games is at cid level
-                     # Actually we need role level total
-                     g = self.meta_stats[cid][role].get('games', 1)
-                     # But we don't have 'early_leads' count easily here unless we fetched it
-                     # For now use defaults or 0.5
-                     lead_freqs.append(0.5) 
-                else: 
-                     lead_freqs.append(0.5)
-                     
-                xp_diffs.append(s.get('avg_xp_15', 0))
-            else:
-                gold_diffs.append(0); snowball_rates.append(0.5); comeback_rates.append(0.5)
-                lead_freqs.append(0.5); xp_diffs.append(0)
-                
-        # 0: Tempo
-        vec[start_idx] = (sum(gold_diffs) / 5.0) / 1000.0 # Normalize 1000 gold avg diff
+            s_snow = 0.5
+            s_come = 0.5
+            
+            # Use Memory (Consistent for Train/Infer mainly)
+            if cid in self.timeline_memory:
+                mem = self.timeline_memory[cid]
+                if mem['short_games'] > 0:
+                    s_snow = mem['short_wins'] / mem['short_games']
+                if mem['long_games'] > 0:
+                    s_come = mem['long_wins'] / mem['long_games']
+            
+            snowball_rates.append(s_snow)
+            comeback_rates.append(s_come)
+            
+            # Get Gold Diff Avg
+            avg_g_diff = 0
+            if cid in self.timeline_memory:
+                mem = self.timeline_memory[cid]
+                if mem.get('gold_diff_count', 0) > 0:
+                    avg_g_diff = mem['total_gold_diff_15'] / mem['gold_diff_count']
+
+            gold_diffs.append(avg_g_diff)
+
+        # 0: Tempo (Gold Diff)
+        avg_gold_diff = sum(gold_diffs) / 5.0
+        vec[start_idx + Cfg.IDX_TEMPO] = avg_gold_diff 
         
         # 1: Snowball
-        vec[start_idx+1] = sum(snowball_rates) / 5.0
+        vec[start_idx + Cfg.IDX_SNOWBALL] = sum(snowball_rates) / 5.0
         
         # 2: Comeback
-        vec[start_idx+2] = sum(comeback_rates) / 5.0
-        
-        # 3: Aggression (Leads)
-        # Placeholder for now
-        vec[start_idx+3] = 0.5
-        
-        # 4: Lane Dom
-        vec[start_idx+4] = (sum(xp_diffs) / 5.0) / 500.0
-
-
-    def _fill_spike_stats(self, team_norm, vec, start_idx):
-        # 3 Buckets: Avg Winrate of team in Early, Mid, Late
-        avg_early, avg_mid, avg_late = [], [], []
-        
-        for cid in team_norm.values():
-            if cid in self.spike_stats:
-                s = self.spike_stats[cid]
-                avg_early.append(self._get_wr(s['early']))
-                avg_mid.append(self._get_wr(s['mid']))
-                avg_late.append(self._get_wr(s['late']))
-            else:
-                # Default 0.5
-                avg_early.append(0.5); avg_mid.append(0.5); avg_late.append(0.5)
-                
-        vec[start_idx] = sum(avg_early) / 5.0
-        vec[start_idx+1] = sum(avg_mid) / 5.0
-        vec[start_idx+2] = sum(avg_late) / 5.0
-
-    def _fill_counter_stats(self, b_team, r_team, vec, start_idx):
-        """
-        Calculates how much Blue counters Red.
-        > 0.5 means Blue has advantage.
-        """
-        roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
-        
-        # 1. Lane Counters (0-4)
-        for i, r in enumerate(roles):
-            bc = b_team.get(r, 0)
-            rc = r_team.get(r, 0)
-            
-            wr = 0.5
-            if bc in self.counter_matrix and rc in self.counter_matrix[bc]:
-                 wr = self._get_wr(self.counter_matrix[bc][rc])
-            
-            vec[start_idx + i] = wr
-            
-        # 2. Team Counter (Average of all cross interactions)
-        # This is expensive (25 lookups), but valuable.
-        cross_wins = []
-        for bc in b_team.values():
-            for rc in r_team.values():
-                if bc in self.counter_matrix and rc in self.counter_matrix[bc]:
-                    cross_wins.append(self._get_wr(self.counter_matrix[bc][rc]))
-        
-        vec[start_idx + 5] = sum(cross_wins) / len(cross_wins) if cross_wins else 0.5
-
-    def _get_wr(self, data):
-        g, w = data['games'], data['wins']
-        if g < 5: return 0.5 # Smoothing threshold
-        return (w + 2.0) / (g + 4.0)
-
-    # --- Boilerplate Helpers (Keep existing logic) ---
-    def _normalize_team(self, team_input):
-        normalized = {}
-        if isinstance(team_input, list):
-            roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
-            for i, cid in enumerate(team_input):
-                if i < 5: normalized[roles[i]] = int(cid)
-        elif isinstance(team_input, dict):
-            normalized = {str(k).upper(): int(v) for k, v in team_input.items()}
-        return normalized
-
-    def _get_id_list(self, team_norm):
-        roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
-        return [self.vocab.get(team_norm.get(r, 0), 0) for r in roles]
+        vec[start_idx + Cfg.IDX_COMEBACK] = sum(comeback_rates) / 5.0
 
     def _fill_comp_stats(self, team_norm, vec, start_idx):
         if not self.ddragon_cache: return
+        # Working array
         stats = np.zeros(15)
         count = 0
         total_atk = 0; total_mag = 0
@@ -404,25 +307,28 @@ class FeatureEngine:
             atk = info.get('attack', 0); mag = info.get('magic', 0); defn = info.get('defense', 0)
             total_atk += atk; total_mag += mag
             
-            stats[0] += atk
-            stats[1] += mag
-            stats[2] += defn
-            stats[3] += info.get('difficulty', 0)
+            stats[Cfg.IDX_ATK] += atk
+            stats[Cfg.IDX_MAG] += mag
+            stats[Cfg.IDX_DEF] += defn
+            stats[Cfg.IDX_DIFF] += info.get('difficulty', 0)
             
-            if "Fighter" in roles: stats[4] += 1
-            if "Tank" in roles: stats[5] += 1; stats[13] += 2
-            if "Mage" in roles: stats[6] += 1; stats[14] += 2
-            if "Assassin" in roles: stats[7] += 1
-            if "Marksman" in roles: stats[8] += 1; stats[14] += 3
-            if "Support" in roles: stats[9] += 1; stats[13] += 1
+            if "Fighter" in roles: stats[Cfg.IDX_FIGHTER] += 1
+            if "Tank" in roles: stats[Cfg.IDX_TANK] += 1; stats[Cfg.IDX_TANKINESS] += 2
+            if "Mage" in roles: stats[Cfg.IDX_MAGE] += 1; stats[Cfg.IDX_CARRY_SCORE] += 2
+            if "Assassin" in roles: stats[Cfg.IDX_ASSASSIN] += 1
+            if "Marksman" in roles: stats[Cfg.IDX_MARKSMAN] += 1; stats[Cfg.IDX_CARRY_SCORE] += 3
+            if "Support" in roles: stats[Cfg.IDX_SUPPORT] += 1; stats[Cfg.IDX_TANKINESS] += 1
         
         if count > 0:
-            for i in range(4): stats[i] /= count
+            for i in [Cfg.IDX_ATK, Cfg.IDX_MAG, Cfg.IDX_DEF, Cfg.IDX_DIFF]:
+                stats[i] /= count
+            
             total_dmg = total_atk + total_mag
             if total_dmg > 0:
-                stats[10] = total_atk / total_dmg
-                stats[11] = total_mag / total_dmg
+                stats[Cfg.IDX_DMG_PHYS] = total_atk / total_dmg
+                stats[Cfg.IDX_DMG_MAGIC] = total_mag / total_dmg
         
+        # Copy to vec
         vec[start_idx : start_idx+15] = stats
 
     def _fill_context_stats(self, team_norm, vec, start_idx):
@@ -443,30 +349,170 @@ class FeatureEngine:
             vec[start_idx + (i*2)] = freq
             vec[start_idx + (i*2) + 1] = wr
 
+    # Updated helpers to return defaults (Legacy Support)
+    
     def _fill_synergy_stats(self, team_norm, vec, start_idx):
-        pairs = []
-        cids = [team_norm.get(r, 0) for r in ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]]
-        
-        for i in range(5):
-            for j in range(i+1, 5):
-                c1, c2 = cids[i], cids[j]
-                if c1 == 0 or c2 == 0: continue
-                pairs.append(self._get_synergy_score(c1, c2))
-                
-        avg_syn = sum(pairs) / len(pairs) if pairs else 0.5
-        max_syn = max(pairs) if pairs else 0.5
-        
-        vec[start_idx] = avg_syn
-        vec[start_idx+1] = max_syn
-        vec[start_idx+2] = self._get_synergy_score(cids[3], cids[4]) # Bot
-        vec[start_idx+3] = self._get_synergy_score(cids[2], cids[1]) # Mid-Jg
-        vec[start_idx+4] = self._get_synergy_score(cids[0], cids[1]) # Top-Jg
+        # PURE LEARNING: Heuristics Removed.
+        # TitanNet learns synergy via Attention.
+        # We fill with 0.0 (Neutral/Empty) to preserve schema shape.
+        vec[start_idx : start_idx+5] = 0.0
 
-    def _get_synergy_score(self, c1, c2):
-        if c1 in self.synergy_matrix and c2 in self.synergy_matrix[c1]:
-            game_data = self.synergy_matrix[c1][c2]
-            return self._get_wr(game_data)
-        return 0.5
+    def _fill_spike_stats(self, team_norm, vec, start_idx):
+        # Simple Early vs Late heuristic based on winrates by game time (if available)
+        # For now, default to mid-game
+        vec[start_idx] = 0.5   # Early
+        vec[start_idx+1] = 0.5 # Mid
+        vec[start_idx+2] = 0.5 # Late
+
+    def _fill_counter_stats(self, b_team, r_team, vec, start_idx):
+        # PURE LEARNING: Heuristics Removed.
+        # Counters are complex and context-dependent.
+        # We let the model learn P(Win | P1, P2...).
+        vec[start_idx : start_idx+5] = 0.0
+
+    def _get_wr(self, data):
+        g, w = data['games'], data['wins']
+        if g < 5: return 0.5 
+        return (w + 2.0) / (g + 4.0)
+
+    # --- TITAN V2 FEATURES ---
+    
+    def vectorize_sequence(self, blue_team, red_team, blue_turns=None, red_turns=None, training_mode=False):
+        """
+        Creates an ORDERED sequence of champion IDs for TitanNet.
+        If blue_turns/red_turns provided (Dict[Role, Turn]), uses them to sort.
+        Format: List of 10 IDs, sorted by Turn (1-10).
+        
+        Returns:
+            draft_ids: List[int] (Length 10)
+            role_ids: List[int] (Length 10) (0-4 for Blue, 0-4 for Red)
+        """
+        # Collect all picks with metadata
+        picks = [] # (turn, team_code, role_code, cid)
+        
+        b_norm = self._normalize_team(blue_team)
+        r_norm = self._normalize_team(red_team)
+        
+        roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+        
+        if training_mode:
+             # Reverting Stochastic Shuffle based on User Architecture Review.
+             # We stick to the Naive Heuristic (Spatial = Role) to preserve "Lane Matchups".
+             # The MCTS will handle the temporal search; the Brain learns the Spatial Board.
+             pass
+
+        # Deterministic / Inference Mode (Naive Heuristic)
+        # Blue
+        for i, r in enumerate(roles):
+            cid = b_norm.get(r, 0)
+            token = self.vocab.get(cid, 0)
+            turn = 0
+            if blue_turns and r in blue_turns:
+                turn = blue_turns[r]
+            else:
+                # Default Assumption: Blue gets 1, 4, 5, 8, 9
+                # This is a naive heuristic for legacy data
+                if i == 0: turn = 1
+                elif i == 1: turn = 4
+                elif i == 2: turn = 5
+                elif i == 3: turn = 8
+                elif i == 4: turn = 9
+            
+            picks.append({'turn': turn, 'token': token, 'role': i, 'team': 0})
+            
+        # Red
+        for i, r in enumerate(roles):
+            cid = r_norm.get(r, 0)
+            token = self.vocab.get(cid, 0)
+            turn = 0
+            if red_turns and r in red_turns:
+                turn = red_turns[r]
+            else:
+                # Fallback: Naive Role Order
+                if i == 0: turn = 2 # Top
+                elif i == 1: turn = 3 # Jg
+                elif i == 2: turn = 6 # Mid
+                elif i == 3: turn = 7 # Bot
+                elif i == 4: turn = 10 # Sup
+                
+            picks.append({'turn': turn, 'token': token, 'role': i, 'team': 1})
+                
+
+            
+        # Sort by turn
+        # If turns are all 0 (legacy), this sort might be unstable or result in role order.
+        # We want to fallback to role order if turns are missing.
+        # But if we used the heuristic above, we have turns.
+        
+        picks.sort(key=lambda x: x['turn'])
+        
+        draft_ids = [p['token'] for p in picks]
+        role_ids = [p['role'] for p in picks] # Note: This loses Team info if we don't have team embedding?
+        # TitanNet has pos_embedding (1-10) which implicitly encodes team order.
+        # But it also has role_embedding.
+        
+        return draft_ids, role_ids
+
+    def encode_timeline(self, full_timeline):
+        """
+        Converts raw timeline frames into a Tensor for TitanNet.
+        High-Resolution Mode: Returns [T, 20] 
+        Features: [P1_Gold, P1_XP ... P10_Gold, P10_XP]
+        Ordered by Participant ID (1-10).
+        Normalization: Gold / 1000, XP / 1000.
+        """
+        if not full_timeline:
+            return np.zeros((1, 20)) # Single empty frame
+            
+        matrix = []
+        for frame in full_timeline:
+            # Frame has 'participants' dict: {pid_str: {gold, xp, dmg}}
+            # OR 'participantFrames' (Raw Riot API)
+            p_data = frame.get('participants')
+            if not p_data:
+                p_data = frame.get('participantFrames')
+                
+            if p_data is None:
+                p_data = {}
+            
+            row = []
+            # Iterate 1 to 10
+            for pid in range(1, 11):
+                # PID keys are usually strings in JSON
+                d = p_data.get(str(pid), {})
+                if not d: d = p_data.get(pid, {})
+                
+                # Gold/XP keys differ in Raw vs Processed
+                # Processed: 'gold', 'xp'
+                # Raw: 'totalGold', 'xp'
+                g = d.get('gold', d.get('totalGold', 0))
+                x = d.get('xp', 0)
+                
+                row.append(g / 1000.0)
+                row.append(x / 1000.0)
+                
+            if len(row) == 20: 
+                matrix.append(row)
+            else:
+                # Should not happen if loop logic is correct
+                matrix.append(np.zeros(20))
+            
+        return np.array(matrix)
+
+    # --- Boilerplate Helpers ---
+    def _normalize_team(self, team_input):
+        normalized = {}
+        if isinstance(team_input, list):
+            roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+            for i, cid in enumerate(team_input):
+                if i < 5: normalized[roles[i]] = int(cid)
+        elif isinstance(team_input, dict):
+            normalized = {str(k).upper(): int(v) for k, v in team_input.items()}
+        return normalized
+
+    def _get_id_list(self, team_norm):
+        roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+        return [self.vocab.get(team_norm.get(r, 0), 0) for r in roles]
 
     def _build_ddragon_cache(self, ddragon):
         for name, data in ddragon.champions.items():
@@ -479,9 +525,9 @@ class FeatureEngine:
          state = {
              'vocab': self.vocab,
              'meta_stats': self.meta_stats,
-             'synergy_matrix': self.synergy_matrix,
-             'counter_matrix': self.counter_matrix,
-             'spike_stats': self.spike_stats
+             'timeline_memory': self.timeline_memory,
+             'item_vocab': self.item_vocab,
+             'rune_vocab': self.rune_vocab
          }
          joblib.dump(state, path)
 
@@ -491,8 +537,11 @@ class FeatureEngine:
             state = joblib.load(path)
             self.vocab = state.get('vocab', {})
             self.meta_stats = state.get('meta_stats', {})
-            self.synergy_matrix = state.get('synergy_matrix', {})
-            self.counter_matrix = state.get('counter_matrix', {})
-            self.spike_stats = state.get('spike_stats', {})
+            self.meta_stats = state.get('meta_stats', {})
+            # Legacy fields ignored for load to enforce leanness
+            # Legacy fields ignored for load to enforce leanness
+            self.timeline_memory = state.get('timeline_memory', {})
+            self.item_vocab = state.get('item_vocab', {})
+            self.rune_vocab = state.get('rune_vocab', {})
             return True
         except: return False
