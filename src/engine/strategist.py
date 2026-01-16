@@ -125,8 +125,8 @@ class DraftStrategist:
         map_participants(red_team_data, red_roles, 5)
         
         # 2. Vectorize (Spatial Order: Blue 0-4 then Red 0-4)
-        # returns (draft_ids_list, seat_ids_list)
-        draft_ids, seat_ids = self.fe.vectorize_sequence(blue_roles, red_roles)
+        # returns (draft_ids_list, seat_ids_list, temporal_turns)
+        draft_ids, seat_ids, temporal_turns = self.fe.vectorize_sequence(blue_roles, red_roles)
         
         picks_vec = draft_ids
         turns_vec = seat_ids # Now contains 1-10 Spatial IDs

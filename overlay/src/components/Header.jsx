@@ -3,43 +3,32 @@ const { ipcRenderer } = window.require('electron');
 
 export function Header() {
     return (
-        <div className="glass-panel" style={{
-            height: '40px',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            padding: '0 16px',
-            WebkitAppRegion: 'drag', // Draggable
-            marginBottom: '8px',
-            borderRadius: '8px',
-            border: '1px solid rgba(255,255,255,0.05)'
-        }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <div style={{
-                    width: '8px', height: '8px',
-                    background: 'var(--primary)',
-                    borderRadius: '50%',
-                    boxShadow: '0 0 8px var(--primary)'
-                }} />
-                <span style={{ fontWeight: 700, letterSpacing: '1px', fontSize: '13px' }}>
-                    HIVE<span style={{ color: 'var(--primary)' }}>MIND</span> ORACLE
+        <div className="glass-panel h-10 flex items-center justify-between px-4 mb-2 rounded-lg border border-white/5 drag-region">
+            <div className="flex items-center gap-2">
+                <div className="w-2 h-2 bg-neon-blue rounded-full shadow-[0_0_8px_rgba(0,240,255,1)]" />
+                <span className="font-bold tracking-widest text-[13px] text-white">
+                    VANTAGE <span className="text-neon-blue">// TITAN v3.5</span>
                 </span>
             </div>
 
-            <div style={{ display: 'flex', gap: '12px', WebkitAppRegion: 'no-drag' }}>
+            <div className="flex gap-3 no-drag">
                 <button
                     onClick={() => ipcRenderer.send('minimize-window')}
-                    style={{ background: 'none', border: 'none', color: 'var(--text-dim)', cursor: 'pointer', fontSize: '16px' }}
+                    className="text-white/40 hover:text-white transition-colors"
                 >
                     _
                 </button>
                 <button
                     onClick={() => ipcRenderer.send('close-window')}
-                    style={{ background: 'none', border: 'none', color: 'var(--accent)', cursor: 'pointer', fontSize: '16px' }}
+                    className="text-white/40 hover:text-pink-500 transition-colors"
                 >
                     ✕
                 </button>
             </div>
+            <style>{`
+                .drag-region { -webkit-app-region: drag; }
+                .no-drag { -webkit-app-region: no-drag; }
+            `}</style>
         </div>
     );
 }

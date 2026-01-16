@@ -1,78 +1,30 @@
-:root {
-  --glass-bg: rgba(20, 20, 30, 0.75);
-  --glass-border: rgba(255, 255, 255, 0.1);
-  --accent: #00c8ff;
-  --text: #ffffff;
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-bg-dark text-white font-sans overflow-hidden;
+  }
+  
+  /* Custom Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-white/10 rounded-full hover:bg-white/20;
+  }
 }
 
-body {
-  margin: 0;
-  font-family: 'Inter', system-ui, sans-serif;
-  background: transparent; /* Transparent for Electron */
-  color: var(--text);
-  overflow: hidden;
-}
-
-#root {
-  width: 100vw;
-  height: 100vh;
-  padding: 10px;
-  box-sizing: border-box;
-}
-
-.container {
-  background: var(--glass-bg);
-  backdrop-filter: blur(12px);
-  border: 1px solid var(--glass-border);
-  border-radius: 12px;
-  height: 100%;
-  display: flex;
-  flex-direction: column;
-  padding: 20px;
-  box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
-}
-
-h1 {
-  font-size: 18px;
-  margin: 0 0 10px 0;
-  border-bottom: 2px solid var(--accent);
-  padding-bottom: 5px;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-}
-
-.status {
-  font-size: 12px;
-  color: #ccc;
-  margin-bottom: 15px;
-}
-
-.card {
-  background: rgba(255,255,255,0.05);
-  border-radius: 8px;
-  padding: 10px;
-  margin-bottom: 10px;
-  border: 1px solid rgba(255,255,255,0.05);
-  transition: all 0.2s;
-}
-
-.card:hover {
-  background: rgba(255,255,255,0.1);
-  transform: translateX(5px);
-  border-left: 2px solid var(--accent);
-}
-
-.pick-score {
-  float: right;
-  font-weight: bold;
-  color: var(--accent);
-}
-
-.gameplan {
-  margin-top: auto;
-  font-size: 13px;
-  line-height: 1.4;
-  background: rgba(0, 0, 0, 0.3);
-  padding: 10px;
-  border-radius: 8px;
+@layer components {
+  .glass-panel {
+    @apply bg-white/5 backdrop-blur-md border border-white/10 shadow-lg;
+  }
+  
+  .glass-card {
+    @apply bg-gradient-to-br from-white/10 to-transparent backdrop-blur-sm border border-white/5 shadow-md hover:border-neon-blue/30 transition-all duration-300;
+  }
 }

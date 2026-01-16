@@ -1,66 +1,62 @@
 import React from 'react';
+import { motion } from 'framer-motion';
 
 export function ChampionCard({ champ, isSelected, onClick, highlight }) {
+    const isSPlus = champ.score >= 95; // Rough heuristic for S-Tier if not explicitly passed
+
     return (
-        <div
+        <motion.div
             onClick={onClick}
-            className={`glass-panel slide-in`}
-            style={{
-                padding: '12px',
-                marginBottom: '8px',
-                borderRadius: '8px',
-                cursor: 'pointer',
-                border: highlight ? '1px solid #ffe600' : (isSelected ? '1px solid var(--primary)' : '1px solid var(--glass-border)'),
-                boxShadow: highlight ? '0 0 15px rgba(255, 230, 0, 0.1)' : 'none',
-                transform: (isSelected || highlight) ? 'scale(1.02)' : 'scale(1)',
-                transition: 'all 0.2s ease',
-                position: 'relative',
-                background: highlight ? 'rgba(255, 230, 0, 0.05)' : (isSelected ? 'rgba(0, 240, 255, 0.05)' : 'var(--bg-panel)')
-            }}
+            whileHover={{ scale: 1.02 }}
+            whileTap={{ scale: 0.98 }}
+            className={`
+                p-3 mb-2 rounded-lg cursor-pointer relative transition-all duration-200
+                border backdrop-blur-md
+                ${highlight
+                    ? 'bg-yellow-400/5 border-yellow-400/50 shadow-[0_0_15px_rgba(255,230,0,0.1)]'
+                    : (isSelected ? 'bg-neon-blue/5 border-neon-blue shadow-[0_0_10px_rgba(0,240,255,0.2)]' : 'bg-white/5 border-white/5 hover:border-white/20')}
+            `}
         >
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <div className="flex justify-between items-center">
+                <div className="flex items-center gap-3">
                     {/* Rank Badge */}
-                    <div style={{
-                        background: 'var(--bg-dark)',
-                        width: '24px', height: '24px',
-                        borderRadius: '6px',
-                        display: 'flex', alignItems: 'center', justifyContent: 'center',
-                        fontWeight: 'bold', fontSize: '12px', color: 'var(--text-dim)'
-                    }}>
+                    <div className={`
+                        w-6 h-6 rounded flex items-center justify-center font-bold text-xs
+                        ${isSPlus ? 'bg-yellow-400 text-black' : 'bg-black/40 text-white/60'}
+                    `}>
                         {Number(champ.score).toFixed(0)}
                     </div>
                     <div>
-                        <div style={{ fontWeight: 700, fontSize: '14px' }}>{champ.champion}</div>
+                        <div className="font-bold text-sm text-white">{champ.champion}</div>
                     </div>
                 </div>
 
-                {/* Tier/Role Badge */}
+                {/* Tags */}
                 {champ.details && champ.details.Meta > 50 && (
-                    <div style={{ fontSize: '10px', color: 'var(--success)', background: 'rgba(0,255,157,0.1)', padding: '2px 6px', borderRadius: '4px' }}>
+                    <div className="text-[10px] text-green-400 bg-green-400/10 px-2 py-0.5 rounded">
                         S-TIER
                     </div>
                 )}
             </div>
 
             {/* Details Chips */}
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginTop: '8px' }}>
+            <div className="flex flex-wrap gap-1.5 mt-2">
                 {Object.entries(champ.details || {}).map(([key, val]) => {
                     if (key === 'Meta' || key === 'Personal' || key === 'Synergy' || key === 'Counter') return null; // Skip raw stats
+
+                    const isWarning = key.includes("Need");
                     return (
-                        <span key={key} style={{
-                            fontSize: '10px',
-                            padding: '2px 6px',
-                            borderRadius: '4px',
-                            background: key.includes("Need") ? 'rgba(255, 68, 68, 0.1)' : 'rgba(0, 240, 255, 0.1)',
-                            color: key.includes("Need") ? 'var(--accent)' : 'var(--primary)',
-                            border: '1px solid rgba(255,255,255,0.05)'
-                        }}>
+                        <span key={key} className={`
+                            text-[10px] px-1.5 py-0.5 rounded border
+                            ${isWarning
+                                ? 'bg-red-500/10 text-red-400 border-red-500/20'
+                                : 'bg-neon-blue/10 text-neon-blue border-neon-blue/20'}
+                        `}>
                             {key}: {val}
                         </span>
                     )
                 })}
             </div>
-        </div>
+        </motion.div>
     );
 }

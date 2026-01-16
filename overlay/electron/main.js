@@ -34,9 +34,14 @@ function createWindow() {
 
     // Dev Mode: Load from Vite Server for reliability
     // Retry connection logic in case Vite is still starting
+    // Dev Mode: Load from Vite Server for reliability
+    // Retry connection logic in case Vite is still starting
     const loadDevServer = () => {
-        win.loadURL('http://localhost:5173').catch((e) => {
-            console.log("Vite server not ready, retrying in 1s...");
+        win.loadURL('http://localhost:5179').then(() => {
+            // Clear Cache to ensure fresh UI
+            win.webContents.session.clearCache().then(() => console.log("Cache Cleared"));
+        }).catch((e) => {
+            console.log("Vite server (5179) not ready, retrying in 1s...");
             setTimeout(loadDevServer, 1000);
         });
     };

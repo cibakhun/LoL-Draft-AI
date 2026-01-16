@@ -6,7 +6,7 @@ import json
 import traceback
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, 
-                             QHBoxLayout, QLabel, QFrame, QGraphicsDropShadowEffect, QToolTip, QSlider)
+                             QHBoxLayout, QLabel, QFrame, QGraphicsDropShadowEffect, QToolTip, QSlider, QPushButton)
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QPoint, QSize, QRectF, QPropertyAnimation, QEasingCurve, pyqtProperty
 from PyQt6.QtGui import QColor, QFont, QCursor, QPixmap, QPainter, QPen, QBrush, QConicalGradient
 
@@ -329,9 +329,25 @@ class TitanOverlay(QMainWindow):
         self.loader = AssetLoader()
         self.engine = None 
         
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | 
-                            Qt.WindowType.Tool)
-        # self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground) # Removed to ensure BG visibility
+        # --- VANTAGE UI CONFIGURATION ---
+        # Remove Tool flag to ensure it appears as a proper window
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint)
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        
+        self.resize(1280, 250) # Ensure valid size
+        print("[OVERLAY] Initialized TitanOverlay")
+        
+        # Load VANTAGE Theme
+        try:
+            style_path = os.path.join(current_dir, "style.qss")
+            if os.path.exists(style_path):
+                with open(style_path, "r") as f:
+                    self.setStyleSheet(f.read())
+            else:
+                print("[WARN] style.qss not found")
+        except Exception as e:
+            print(f"[ERROR] Loading Style: {e}")
+
         screen_geo = QApplication.primaryScreen().geometry()
         w = 1100
         h = 700 
@@ -339,20 +355,51 @@ class TitanOverlay(QMainWindow):
         y = (screen_geo.height() - h) // 2
         self.setGeometry(x, y, w, h)
         
-        # Background
+        # Background handled by QSS/PaintEvent, keeping pixmap logic for safety
         bg_path = os.path.join(current_dir, "assets", "background.png")
         self.bg_pixmap = QPixmap(bg_path)
-        if self.bg_pixmap.isNull():
-            print(f"[WARN] Could not load background from {bg_path}")
-            self.setStyleSheet(f"background-color: {THEME['bg_main']};")
         
         self.mousePos = None
         
-        # --- NEW MIRROR UI ---
-        # Engine is None here, so we must set it later
+        # --- MAIN CONTAINER ---
+        # Wrap everything in a frame for QSS styling (borders/radius)
+        self.main_frame = QFrame(self)
+        self.main_frame.setObjectName("MainFrame")
+        self.setCentralWidget(self.main_frame)
+        
+        layout = QVBoxLayout(self.main_frame)
+        layout.setContentsMargins(0, 0, 0, 0)
+        
+        # HEADER (Custom Title Bar)
+        self.header = QFrame()
+        self.header.setFixedHeight(40)
+        self.header.setObjectName("HeaderFrame") # Styling hook
+        header_layout = QHBoxLayout(self.header)
+        header_layout.setContentsMargins(15, 0, 15, 0)
+        
+        title = QLabel("VANTAGE // TITAN v3.5")
+        title.setObjectName("TitleLabel")
+        header_layout.addWidget(title)
+        header_layout.addStretch()
+        
+        btn_close = QPushButton("✕")
+        btn_close.setObjectName("CloseButton")
+        btn_close.setFixedSize(30, 30)
+        btn_close.clicked.connect(self.close)
+        header_layout.addWidget(btn_close)
+        
+        layout.addWidget(self.header)
+
+        # CONTENT AREA
+        self.content_area = QWidget()
+        self.content_layout = QVBoxLayout(self.content_area)
+        layout.addWidget(self.content_area)
+
+        # --- MIRROR UI ---
+        # Reparent Mirror to Content Area
         self.mirror = DraftMirrorWidget(self.loader, None)
         self.mirror.suggestion_clicked.connect(self.on_recommendation_clicked)
-        self.setCentralWidget(self.mirror)
+        self.content_layout.addWidget(self.mirror)
         
     def set_engine(self, engine):
         self.engine = engine

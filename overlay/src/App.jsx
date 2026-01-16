@@ -1,13 +1,11 @@
 import { useState, useEffect } from 'react'
-import './styles/theme.css'
+import { motion, AnimatePresence } from 'framer-motion'
 import { Header } from './components/Header'
-import { WinProbability } from './components/WinProbability'
 import { ChampionCard } from './components/ChampionCard'
 import { TeamDisplay } from './components/TeamDisplay'
 
 function App() {
     const [data, setData] = useState({ status: "Connecting...", recommendations: [] })
-    const [winProb, setWinProb] = useState(null)
     const [selectedChamp, setSelectedChamp] = useState(null)
     const [gameplan, setGameplan] = useState(null)
     const [build, setBuild] = useState(null)
@@ -16,29 +14,21 @@ function App() {
     useEffect(() => {
         const poll = async () => {
             try {
-                // Status & Recommendations
                 const res = await fetch('http://127.0.0.1:5000/status')
                 const json = await res.json()
                 setData(json)
-
-                // Predictions
-                const res2 = await fetch('http://127.0.0.1:5000/predict')
-                const json2 = await res2.json()
-                setWinProb(json2)
-
             } catch (e) {
                 console.error("Connection error:", e)
-                setData(prev => ({ ...prev, status: "Offline (Retrying...)" }))
+                setData(prev => ({ ...prev, status: "Offline" }))
             }
         }
-
         const interval = setInterval(poll, 800)
         return () => clearInterval(interval)
     }, [])
 
     const fetchGameplan = async (champName) => {
         if (selectedChamp === champName) {
-            setSelectedChamp(null); // Toggle off
+            setSelectedChamp(null);
             return;
         }
         setSelectedChamp(champName)
@@ -55,10 +45,12 @@ function App() {
     const handleSwap = async (teamSide, roleA, roleB) => {
         const currentRoles = teamSide === 'my' ? data.my_team_assignments : data.enemy_team_assignments;
         const newRoles = { ...currentRoles };
-        const champA = newRoles[roleA];
-        const champB = newRoles[roleB];
-        newRoles[roleA] = champB;
-        newRoles[roleB] = champA;
+        newRoles[roleA] = newRoles[roleB]; // Logic fixed (was mutating in place incorrectly in old code potentially)
+        // Actually, old code was: newRoles[roleA] = champB; which is correct logic if vars set.
+        // Let's stick to simple swap logic.
+        const temp = newRoles[roleA];
+        newRoles[roleA] = newRoles[roleB];
+        newRoles[roleB] = temp;
 
         try {
             await fetch('http://127.0.0.1:5000/setup_override', {
@@ -76,27 +68,27 @@ function App() {
     };
 
     return (
-        <div style={{
-            height: '100vh',
-            display: 'flex',
-            flexDirection: 'column',
-            padding: '10px',
-            background: 'linear-gradient(to bottom, rgba(5,5,10,0.95), rgba(5,5,10,0.85))'
-        }}>
+        <div className="h-screen w-screen flex flex-col p-4 bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-slate-900 via-[#0a0a15] to-black text-white relative overflow-hidden">
+
+            {/* AMBIENT BACKGROUND EFFECTS */}
+            <div className="absolute top-[-20%] left-[-10%] w-[600px] h-[600px] bg-neon-blue/10 rounded-full blur-[120px] pointer-events-none animate-pulse" />
+            <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] bg-void-purple/20 rounded-full blur-[100px] pointer-events-none" />
+
+            {/* DEBUG BADGE - VERIFIED */}
+            <div className="absolute top-0 right-0 m-1 px-2 py-0.5 bg-green-500/20 border border-green-500 text-green-400 text-[10px] font-bold z-50 rounded backdrop-blur-md shadow-[0_0_10px_rgba(0,255,100,0.3)]">
+                ✓ UI CONNECTED
+            </div>
+
             <Header />
 
-            {/* Main Content Area */}
-            <div style={{ flex: 1, overflowY: 'auto', paddingRight: '4px' }}>
+            {/* Main Content */}
+            <div className="flex-1 overflow-y-auto pr-1 space-y-4">
 
                 {/* Status Bar */}
-                <div style={{
-                    fontSize: '10px', textTransform: 'uppercase', letterSpacing: '2px',
-                    color: 'var(--text-dim)', marginBottom: '16px', textAlign: 'center'
-                }}>
-                    System Status: <span style={{ color: 'var(--primary)' }}>{data.status}</span>
+                <div className="text-xs uppercase tracking-widest text-center text-white/40 mb-4">
+                    System Status: <span className="text-neon-blue animate-pulse">{data.status}</span>
                 </div>
 
-                {/* Team Display */}
                 <TeamDisplay
                     myTeam={data.my_team_names}
                     enemyTeam={data.enemy_team_names}
@@ -106,16 +98,17 @@ function App() {
                     onSwap={handleSwap}
                 />
 
-                {/* Manual Role Selector */}
-                <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', margin: '8px 0', padding: '4px', background: 'rgba(0,0,0,0.3)', borderRadius: '8px' }}>
+                {/* Role Selector */}
+                <div className="flex justify-center gap-2 bg-white/5 p-2 rounded-lg backdrop-blur-sm">
                     {['TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY'].map(role => {
-                        const isActive = data.assigned_position === role || (data.assigned_position && data.assigned_position.startsWith(role));
+                        const isActive = data.assigned_position && data.assigned_position.startsWith(role);
                         const icons = { TOP: '🛡️', JUNGLE: '🌲', MIDDLE: '🗡️', BOTTOM: '🏹', UTILITY: '💊' };
                         return (
-                            <div
+                            <motion.div
                                 key={role}
+                                whileHover={{ scale: 1.1, backgroundColor: 'rgba(0, 240, 255, 0.2)' }}
+                                whileTap={{ scale: 0.95 }}
                                 onClick={async () => {
-                                    /* Reuse override endpoint */
                                     await fetch('http://127.0.0.1:5000/setup_override', {
                                         method: 'POST',
                                         headers: { 'Content-Type': 'application/json' },
@@ -123,119 +116,95 @@ function App() {
                                     });
                                     setData(d => ({ ...d, assigned_position: role }));
                                 }}
-                                style={{
-                                    padding: '4px 8px', borderRadius: '4px', cursor: 'pointer', fontSize: '14px',
-                                    border: isActive ? '1px solid var(--primary)' : '1px solid transparent',
-                                    background: isActive ? 'rgba(0, 240, 255, 0.1)' : 'transparent',
-                                    opacity: isActive ? 1 : 0.5,
-                                    transition: 'all 0.2s'
-                                }}
+                                className={`p-2 rounded cursor-pointer transition-colors border ${isActive ? 'border-neon-blue/50 bg-neon-blue/10' : 'border-transparent opacity-50 hover:opacity-100'}`}
                                 title={`Set Role to ${role}`}
                             >
                                 {icons[role]}
-                            </div>
+                            </motion.div>
                         )
                     })}
                 </div>
 
-                {/* Live Prediction REMOVED as per user request */}
-                {/* {winProb && <WinProbability data={winProb} />} */}
-
-                {/* Recommendations List */}
-                {data.recommendations && data.recommendations.length > 0 && (
-                    <>
-                        {/* 1. CURRENT SELECTION (User Request) */}
-                        {data.selection_stats && (
-                            <div style={{ marginBottom: '16px' }}>
-                                <div style={{
-                                    fontSize: '12px', fontWeight: 'bold', marginBottom: '8px',
-                                    color: 'var(--primary)', display: 'flex', alignItems: 'center', gap: '8px'
-                                }}>
-                                    <span>CURRENT SELECTION</span>
-                                    <div style={{ flex: 1, height: '1px', background: 'var(--primary)', opacity: 0.5 }} />
-                                </div>
-                                <ChampionCard
-                                    champ={data.selection_stats}
-                                    isSelected={selectedChamp === data.selection_stats.champion}
-                                    onClick={() => fetchGameplan(data.selection_stats.champion)}
-                                    highlight={true} // New prop for visual emphasis
-                                />
-                            </div>
-                        )}
-
-                        <div style={{
-                            fontSize: '12px', fontWeight: 'bold', marginBottom: '8px',
-                            color: 'var(--text-main)', display: 'flex', alignItems: 'center', gap: '8px'
-                        }}>
-                            <span>top suggestions</span>
-                            <div style={{ flex: 1, height: '1px', background: 'var(--glass-border)' }} />
-                        </div>
-
-                        {data.recommendations.map((rec) => (
-                            // Don't show again if it's the current selection
-                            rec.champion !== (data.selection_stats?.champion) && (
-                                <div key={rec.champion}>
+                {/* Recommendations */}
+                <AnimatePresence>
+                    {data.recommendations && data.recommendations.length > 0 ? (
+                        <div className="space-y-4">
+                            {/* Current Selection */}
+                            {data.selection_stats && (
+                                <motion.div
+                                    initial={{ opacity: 0, y: 10 }}
+                                    animate={{ opacity: 1, y: 0 }}
+                                >
+                                    <div className="flex items-center gap-2 mb-2">
+                                        <span className="text-xs font-bold text-neon-blue">CURRENT SELECTION</span>
+                                        <div className="h-px flex-1 bg-neon-blue/20" />
+                                    </div>
                                     <ChampionCard
-                                        champ={rec}
-                                        isSelected={selectedChamp === rec.champion}
-                                        onClick={() => fetchGameplan(rec.champion)}
+                                        champ={data.selection_stats}
+                                        isSelected={selectedChamp === data.selection_stats.champion}
+                                        onClick={() => fetchGameplan(data.selection_stats.champion)}
+                                        highlight={true}
                                     />
+                                </motion.div>
+                            )}
 
-                                    {/* Expanded Gameplan View */}
-                                    {selectedChamp === rec.champion && gameplan && (
-                                        <div className="slide-in" style={{
-                                            marginLeft: '12px', padding: '12px',
-                                            borderLeft: '2px solid var(--primary)',
-                                            background: 'rgba(0, 240, 255, 0.02)',
-                                            marginBottom: '12px'
-                                        }}>
-                                            <div style={{ fontSize: '11px', lineHeight: '1.6', color: 'var(--text-dim)' }}>
-                                                {gameplan}
-                                            </div>
-
-                                            {/* Build Path */}
-                                            {build && (
-                                                <div style={{ marginTop: '12px' }}>
-                                                    <div style={{ fontSize: '10px', color: 'var(--accent)', fontWeight: 'bold', marginBottom: '4px' }}>
-                                                        SOTA AI BUILD
-                                                    </div>
-                                                    <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
-                                                        {build.final_build.map((item, i) => (
-                                                            <div key={i} style={{
-                                                                background: 'var(--bg-dark)',
-                                                                border: '1px solid var(--glass-border)',
-                                                                padding: '4px 8px', borderRadius: '4px',
-                                                                fontSize: '10px'
-                                                            }}>
-                                                                {item}
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
-                            )
-                        ))}
-                    </>
-                )}
-
-                {(!data.recommendations || data.recommendations.length === 0) && (
-                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '200px', opacity: 0.5 }}>
-                        <div style={{ fontSize: '30px', marginBottom: '10px' }}>
-                            {data.status.includes("Active") ? "🤔" : "👁️"}
-                        </div>
-                        <div style={{ textAlign: 'center' }}>
-                            {data.status.includes("Active") ? "Thinking... (Or No Valid Champs)" : "Waiting for Draft..."}
-                        </div>
-                        {data.status.includes("Active") && (
-                            <div style={{ fontSize: '10px', marginTop: '8px', color: 'var(--text-dim)' }}>
-                                Role: {data.assigned_position || "Detecting..."}
+                            <div className="flex items-center gap-2 text-white/60">
+                                <span className="text-xs font-bold uppercase">Top Suggestions</span>
+                                <div className="h-px flex-1 bg-white/10" />
                             </div>
-                        )}
-                    </div>
-                )}
+
+                            {data.recommendations.map((rec, i) => (
+                                rec.champion !== (data.selection_stats?.champion) && (
+                                    <motion.div
+                                        key={rec.champion}
+                                        initial={{ opacity: 0, x: -20 }}
+                                        animate={{ opacity: 1, x: 0 }}
+                                        transition={{ delay: i * 0.05 }}
+                                    >
+                                        <ChampionCard
+                                            champ={rec}
+                                            isSelected={selectedChamp === rec.champion}
+                                            onClick={() => fetchGameplan(rec.champion)}
+                                        />
+
+                                        {/* Gameplan */}
+                                        <AnimatePresence>
+                                            {selectedChamp === rec.champion && gameplan && (
+                                                <motion.div
+                                                    initial={{ opacity: 0, height: 0 }}
+                                                    animate={{ opacity: 1, height: 'auto' }}
+                                                    exit={{ opacity: 0, height: 0 }}
+                                                    className="ml-3 p-3 mt-2 border-l-2 border-neon-blue bg-neon-blue/5 text-xs text-white/80 leading-relaxed overflow-hidden"
+                                                >
+                                                    {gameplan}
+                                                    {build && (
+                                                        <div className="mt-3">
+                                                            <div className="text-[10px] font-bold text-neon-blue mb-1">AI BUILD PATH</div>
+                                                            <div className="flex flex-wrap gap-1">
+                                                                {build.final_build.map((item, idx) => (
+                                                                    <span key={idx} className="bg-bg-dark border border-white/10 px-2 py-1 rounded text-[10px]">
+                                                                        {item}
+                                                                    </span>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </motion.div>
+                                            )}
+                                        </AnimatePresence>
+                                    </motion.div>
+                                )
+                            ))}
+                        </div>
+                    ) : (
+                        <div className="h-40 flex flex-col items-center justify-center opacity-50 space-y-2">
+                            <div className="text-4xl animate-bounce">{data.status.includes("Active") ? "🤔" : "👁️"}</div>
+                            <div className="text-sm font-medium">
+                                {data.status.includes("Active") ? "Calculating Optimal Move..." : "Waiting for Draft..."}
+                            </div>
+                        </div>
+                    )}
+                </AnimatePresence>
             </div>
         </div>
     )

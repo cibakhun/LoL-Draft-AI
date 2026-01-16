@@ -5,4 +5,8 @@ import react from '@vitejs/plugin-react'
 export default defineConfig({
   plugins: [react()],
   base: './', // Important for Electron loading files
+  server: {
+    port: 5179,
+    strictPort: true,
+  }
 })

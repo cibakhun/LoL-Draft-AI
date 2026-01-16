@@ -36,6 +36,7 @@ if HAS_TORCH:
             super(TitanNet, self).__init__()
             
             self.d_model = d_model
+            self.nhead = nhead
             
             # --- Embeddings & Encoders ---
             
@@ -206,6 +207,9 @@ if HAS_TORCH:
             sorted_pad = torch.gather(raw_pad, 1, sort_indices)
 
             # --- Transformer Pass ---
+            if src_mask.dim() == 3 and src_mask.size(0) == B:
+                src_mask = src_mask.repeat_interleave(self.nhead, dim=0)
+
             x_trans = self.transformer(x_sorted, mask=src_mask, src_key_padding_mask=sorted_pad)
             
             # --- Heads ---

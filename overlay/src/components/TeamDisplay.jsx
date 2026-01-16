@@ -1,10 +1,7 @@
 import React, { useState } from 'react';
+import { motion } from 'framer-motion';
 
 export function TeamDisplay({ myTeam, enemyTeam, myTeamRoles, enemyTeamRoles, myPick, onSwap }) {
-    // If backend hasn't resolved yet, fallback to list logic (or just wait)
-    // But we prefer the role view.
-
-    // Selection state for swapping: { side: 'my' | 'enemy', role: 'TOP' }
     const [selection, setSelection] = useState(null);
 
     const roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"];
@@ -14,61 +11,52 @@ export function TeamDisplay({ myTeam, enemyTeam, myTeamRoles, enemyTeamRoles, my
         if (!onSwap) return;
 
         if (selection && selection.side === side) {
-            // Swap!
             if (selection.role !== role) {
                 onSwap(side, selection.role, role);
             }
-            setSelection(null); // Clear after swap or if clicked same
+            setSelection(null);
         } else {
-            // Select
             setSelection({ side, role });
         }
     };
 
     const renderTeam = (side, assignments, teamList) => {
         const isMyTeam = side === 'my';
-        // Merge assignments with list (if assignment missing, we might want to show it in 'Bench'?)
-        // For now, simplify: we show the 5 slots. If empty, show Empty.
 
         return (
-            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', gap: '4px' }}>
+            <div className="flex-1 flex flex-col gap-1">
                 {roles.map((role, i) => {
                     const champName = assignments ? assignments[role] : (teamList ? teamList[i] : null);
                     const isSelected = selection && selection.side === side && selection.role === role;
 
                     return (
-                        <div
+                        <motion.div
                             key={role}
+                            initial={{ opacity: 0, x: isMyTeam ? -10 : 10 }}
+                            animate={{ opacity: 1, x: 0 }}
+                            transition={{ delay: i * 0.05 }}
                             onClick={() => handleSlotClick(side, role)}
-                            className="glass-panel slide-in"
-                            style={{
-                                animationDelay: `${i * 0.05}s`,
-                                padding: '8px 10px', fontSize: '13px', borderRadius: '6px',
-                                display: 'flex', alignItems: 'center', justifyContent: isMyTeam ? 'flex-start' : 'flex-end', gap: '8px',
-                                border: isSelected ? '1px solid var(--primary)' : '1px solid transparent',
-                                borderLeft: isMyTeam ? (champName === myPick ? '4px solid #ffffff' : '2px solid var(--success)') : undefined,
-                                borderRight: !isMyTeam ? '2px solid var(--accent)' : undefined,
-                                background: isSelected ? 'rgba(0, 240, 255, 0.15)' : 'var(--bg-panel)',
-                                boxShadow: isSelected ? '0 0 10px rgba(0,240,255,0.2)' : 'none',
-                                cursor: 'pointer',
-                                transition: 'all 0.2s ease',
-                                minHeight: '34px'
-                            }}
+                            className={`
+                                py-2 px-3 text-[13px] rounded-md flex items-center gap-2 cursor-pointer transition-all min-h-[34px] border
+                                ${isMyTeam ? 'justify-start' : 'justify-end'}
+                                ${isSelected
+                                    ? 'bg-neon-blue/20 border-neon-blue shadow-[0_0_10px_rgba(0,240,255,0.2)]'
+                                    : 'bg-white/5 border-transparent hover:bg-white/10'}
+                                ${isMyTeam
+                                    ? (champName === myPick ? 'border-l-4 border-l-white' : 'border-l-2 border-l-green-400/50')
+                                    : 'border-r-2 border-r-pink-500/50'}
+                            `}
                         >
-                            {isMyTeam && <span style={{ opacity: 0.7, fontSize: '11px', width: '18px' }}>{roleIcons[role]}</span>}
+                            {isMyTeam && <span className="opacity-70 text-[11px] w-5">{roleIcons[role]}</span>}
 
-                            <span style={{
-                                fontWeight: champName === myPick ? 'bold' : (champName === "Picking..." ? 'normal' : '500'),
-                                color: champName === "Picking..." ? 'var(--text-dim)' : (champName ? 'var(--text-main)' : 'var(--text-dim)'),
-                                textShadow: champName === myPick ? '0 0 10px rgba(255,255,255,0.5)' : 'none',
-                                fontStyle: champName === "Picking..." ? 'italic' : 'normal',
-                                animation: champName === "Picking..." ? 'pulse-glow 2s infinite' : 'none'
-                            }}>
+                            <span className={`
+                                ${champName === myPick ? 'font-bold text-white drop-shadow-[0_0_5px_rgba(255,255,255,0.8)]' : (champName === "Picking..." ? 'italic text-white/50 animate-pulse' : 'font-medium text-gray-200')}
+                            `}>
                                 {champName || "Waiting..."}
                             </span>
 
-                            {!isMyTeam && <span style={{ opacity: 0.7, fontSize: '11px', width: '18px', textAlign: 'right' }}>{roleIcons[role]}</span>}
-                        </div>
+                            {!isMyTeam && <span className="opacity-70 text-[11px] w-5 text-right">{roleIcons[role]}</span>}
+                        </motion.div>
                     );
                 })}
             </div>
@@ -76,20 +64,20 @@ export function TeamDisplay({ myTeam, enemyTeam, myTeamRoles, enemyTeamRoles, my
     };
 
     return (
-        <div style={{ marginBottom: '16px' }}>
+        <div className="mb-4">
             {/* Headers */}
-            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '8px', fontSize: '10px', color: 'var(--text-dim)', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                <span style={{ color: 'var(--success)' }}>Your Team</span>
-                <div style={{ fontSize: '9px', opacity: 0.7 }}>Click to Swap Lanes</div>
-                <span style={{ color: 'var(--accent)' }}>Enemy Team</span>
+            <div className="flex justify-between mb-2 text-[10px] text-white/40 uppercase tracking-wider">
+                <span className="text-green-400">Your Team</span>
+                <span className="opacity-50 text-[9px]">Click to Swap</span>
+                <span className="text-pink-500">Enemy Team</span>
             </div>
 
             {/* Teams Grid */}
-            <div style={{ display: 'flex', gap: '8px' }}>
+            <div className="flex gap-2">
                 {renderTeam('my', myTeamRoles, myTeam)}
 
                 {/* VS Divider */}
-                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--text-dim)', fontSize: '10px', fontWeight: 'bold', width: '20px' }}>
+                <div className="flex items-center justify-center text-white/20 text-[10px] font-bold w-5">
                     VS
                 </div>
 
