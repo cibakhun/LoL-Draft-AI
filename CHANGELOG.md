@@ -13,10 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dynamic Masking**: Implemented causal masking to strictly enforce temporal dependencies during drafting.
 - **Documentation**: Added professional `README.md`, `CONTRIBUTING.md`, and `LICENSE`.
 - **Frontend**: integrated `overlay/` directory for the Electron/React UI.
+- **Verification**: Added `verify_masking.py` and `verify_refactor.py` to ensure mathematical correctness.
 
 ### Changed
 - **Architecture**: Migrated from V1.2 "Dreamer/Time Lord" to V3.5 Spatial Engine.
 - **Repository**: Restructured for better separation of concerns between `engine` (Neural) and `interface` (LCU).
 
-### Fixed
-- **Verification**: Added `verify_masking.py` and `verify_refactor.py` to ensure mathematical correctness.
+
