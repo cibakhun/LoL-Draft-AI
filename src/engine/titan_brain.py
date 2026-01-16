@@ -9,21 +9,22 @@ try:
 except ImportError:
     HAS_TORCH = False
 
-class TitanNet(nn.Module if HAS_TORCH else object):
     """
-    TitanNet V3: The God Schema Model.
+    TitanNet V3.5: The God Schema Model (Audited).
     A Multi-Input Transformer optimized for "Big Data" draft emulation.
     
     Inputs:
     1. Picks (Shape 10): Champion IDs (Int16)
-    2. Turns (Shape 10): Pick Order 1-10 (Int8)
+    2. Turns (Shape 10): Spatial Seat IDs (1-10) -> Used for Spatial Identity
     3. Bans  (Shape 10): Champion IDs (Int16)
     4. Mast  (Shape 10): Log-Normalized Mastery/XP (Float16)
     5. Meta  (Shape 3):  [Cs/Min, Patch, Side] (Float16)
+    6. Times (Shape 10): Pick Order (1-10)
     
     Architecture:
     - Shared Champion Embedding (Picks & Bans)
-    - Turn Embedding
+    - Positional Embedding (Temporal: 1-21)
+    - Spatial Embedding (Sequence/Seat: 1-10)
     - Mastery Encoder (Linear)
     - Meta Encoder (Linear -> Global Context)
     - Transformer Backbone (Encoder)
@@ -37,19 +38,23 @@ class TitanNet(nn.Module if HAS_TORCH else object):
         # --- Embeddings & Encoders ---
         
         # 1. Champion Embedding (Shared for Picks and Bans)
-        # Vocab Size safe upper bound ~2000. 0 is padding/empty.
         self.champ_embedding = nn.Embedding(vocab_size, d_model, padding_idx=0)
         
-        # 2. Pick Turn Embedding (Positions 1-10, plus 0 for unknown/pad)
-        self.turn_embedding = nn.Embedding(16, d_model, padding_idx=0)
+        # 2. Positional Embedding (Temporal)
+        # Covers 0 (Meta), 1-10 (Bans), 11-20 (Picks)
+        self.pos_embedding = nn.Embedding(32, d_model, padding_idx=0)
         
-        # 3. Mastery Encoder (Scalar -> Vector)
+        # 3. Spatial/Seat Embedding (1-10)
+        # Preserves "Blue Top" vs "Red Top" identity regardless of pick order.
+        self.seat_embedding = nn.Embedding(16, d_model, padding_idx=0)
+        
+        # 4. Mastery Encoder (Scalar -> Vector)
         self.mastery_encoder = nn.Sequential(
             nn.Linear(1, d_model),
             nn.GELU()
         )
         
-        # 4. Meta Encoder (Vector 3 -> Vector)
+        # 5. Meta Encoder (Vector 3 -> Vector)
         self.meta_encoder = nn.Sequential(
             nn.Linear(3, d_model),
             nn.GELU()
@@ -69,7 +74,6 @@ class TitanNet(nn.Module if HAS_TORCH else object):
         # --- Heads ---
         
         # 1. Policy Head (Draft Reconstruction / Suggestion)
-        # Predicts logits for ALL champions.
         self.policy_head = nn.Sequential(
             nn.Linear(d_model, d_model),
             nn.GELU(),
@@ -78,7 +82,6 @@ class TitanNet(nn.Module if HAS_TORCH else object):
         )
         
         # 2. Value Head (Win Probability)
-        # pooled_output -> Scalar
         self.value_head = nn.Sequential(
             nn.Linear(d_model, 128),
             nn.GELU(),
@@ -86,99 +89,137 @@ class TitanNet(nn.Module if HAS_TORCH else object):
             nn.Sigmoid()
         )
         
-    def forward(self, x_picks, x_turns, x_bans, x_mast, x_meta, src_mask=None):
+    def _get_schedule(self, B, device, mode="SOLO"):
         """
-        x_picks: [B, 10] (Int)
-        x_turns: [B, 10] (Int)
+        Returns time indices for Bans and offsets for Picks.
+        
+        SOLO (Default):
+        - Bans 1-10 (Times 1-10)
+        - Picks 1-10 (Times 11-20)
+        
+        TOURNAMENT:
+        - Bans 1-6 (Times 1-6)
+        - Picks 1-6 (Times 7-12)
+        - Bans 7-10 (Times 13-16)
+        - Picks 7-10 (Times 17-20)
+        """
+        t_bans = torch.zeros((B, 10), device=device)
+        pick_offset_func = None
+        
+        if mode == "TOURNAMENT":
+             # Phase 1
+             t_bans[:, 0:6] = torch.arange(1, 7, device=device)
+             # Phase 2
+             t_bans[:, 6:10] = torch.arange(13, 17, device=device)
+             
+             def tournament_offset(pick_times):
+                  # pick_times input is 1..10
+                  pt = pick_times.float()
+                  mask_p2 = (pt > 6)
+                  pt[~mask_p2] += 6.0   # 1..6 -> 7..12
+                  pt[mask_p2] += 10.0   # 7..10 -> 17..20
+                  return pt.long()
+             pick_offset_func = tournament_offset
+             
+        else: # SOLO (Ranked)
+             t_bans = torch.arange(1, 11, device=device).expand(B, 10)
+             
+             def solo_offset(pick_times):
+                  # Input 1..10 -> Output 11..20
+                  return pick_times.long() + 10
+             pick_offset_func = solo_offset
+             
+        return t_bans, pick_offset_func
+
+    def forward(self, x_picks, x_turns, x_bans, x_mast, x_meta, x_times=None, src_mask=None, mode="SOLO"):
+        """
+        x_picks: [B, 10] (Int) - Champion IDs
+        x_turns: [B, 10] (Int) - Spatial Seat IDs (1-10)
         x_bans:  [B, 10] (Int)
         x_mast:  [B, 10] (Float)
         x_meta:  [B, 3]  (Float)
-        src_mask: [21, 21] (Bool/Float) - Optional Causal Mask for Transformer
+        x_times: [B, 10] (Int) - Pick Order (1..10)
+        mode:    "SOLO" (Default) or "TOURNAMENT"
         """
         B = x_picks.size(0)
+        device = x_picks.device
         
         # --- Feature Engineering ---
         
-        # 1. Player Features (Pick + Turn + Mastery)
-        e_picks = self.champ_embedding(x_picks) # [B, 10, D]
-        e_turns = self.turn_embedding(x_turns)  # [B, 10, D]
-        e_mast  = self.mastery_encoder(x_mast.unsqueeze(-1)) # [B, 10, 1] -> [B, 10, D]
+        # 1. Times & Scheduling
+        if x_times is None:
+             x_times = torch.arange(1, 11, device=device).expand(B, 10) # 1..10 input
+             
+        ban_times, pick_map_func = self._get_schedule(B, device, mode=mode)
         
-        # Sum Player Features
-        player_feats = e_picks + e_turns + e_mast # [B, 10, D]
+        # Apply mapping to Pick Times
+        # We clone to avoid modifying input tensor in place if it's reused
+        pick_times_global = pick_map_func(x_times.clone())
         
-        # 2. Ban Features (Just Champ Embedding)
-        # We might want to add a 'Ban' positional embedding, but simple bag-of-bans or ordered bans is fine.
-        ban_feats = self.champ_embedding(x_bans) # [B, 10, D]
+        # 2. Player Features
+        e_picks_id = self.champ_embedding(x_picks) 
+        e_picks_pos = self.pos_embedding(pick_times_global) 
+        e_picks_seat = self.seat_embedding(x_turns) 
+        e_mast  = self.mastery_encoder(x_mast.unsqueeze(-1)) 
         
-        # 3. Global Context (Meta)
-        meta_feat = self.meta_encoder(x_meta).unsqueeze(1) # [B, 1, D]
+        player_feats = e_picks_id + e_picks_pos + e_picks_seat + e_mast
         
-        # --- Fusion ---
-        # Sequence: [Meta(1), Bans(10), Picks(10)]
-        # Total Length: 21
-        # Indices:
-        # 0: Meta
-        # 1-10: Bans (Usually we don't need causal mask for bans, they are pre-game context)
-        # 11-20: Picks (We NEED causal mask here)
+        # 3. Ban Features
+        e_bans_id = self.champ_embedding(x_bans)
+        e_bans_pos = self.pos_embedding(ban_times.long())
+        ban_feats = e_bans_id + e_bans_pos
         
-        x = torch.cat([meta_feat, ban_feats, player_feats], dim=1) # [B, 21, D]
+        # 4. Global Meta (Time 0)
+        meta_feat = self.meta_encoder(x_meta).unsqueeze(1)
+        e_meta_pos = self.pos_embedding(torch.zeros((B, 1), dtype=torch.long, device=device))
+        meta_feat = meta_feat + e_meta_pos
         
-        # --- Masking ---
-        # Create Key Padding Mask (True where value is 0/Padding) to ignore empty slots
-        # Sequence: [Meta(1), Bans(10), Picks(10)]
+        # --- Physical Sorting (Interleaving) ---
+        raw_seq = torch.cat([meta_feat, ban_feats, player_feats], dim=1) # [B, 21, D]
         
-        # 1. Meta is never padding
-        mask_meta = torch.zeros((B, 1), dtype=torch.bool, device=x_picks.device)
+        t_meta = torch.zeros((B, 1), device=device)
+        t_bans = ban_times
+        t_picks = pick_times_global.float()
         
-        # 2. Bans Padding
-        mask_bans = (x_bans == 0) # [B, 10]
+        all_times = torch.cat([t_meta, t_bans.float(), t_picks], dim=1) # [B, 21]
+        sort_indices = torch.argsort(all_times, dim=1)
         
-        # 3. Picks Padding
-        mask_picks = (x_picks == 0) # [B, 10]
+        idx_expanded = sort_indices.unsqueeze(-1).expand_as(raw_seq)
+        x_sorted = torch.gather(raw_seq, 1, idx_expanded)
         
-        # Concatenate: [Meta, Bans, Picks]
-        padding_mask = torch.cat([mask_meta, mask_bans, mask_picks], dim=1) # [B, 21]
+        # --- Dynamic Causal Mask (On Sorted Sequence) ---
+        sorted_times = torch.gather(all_times, 1, sort_indices)
+        
+        if src_mask is None:
+             T_i = sorted_times.unsqueeze(2) 
+             T_j = sorted_times.unsqueeze(1) 
+             causal_mask = (T_j > T_i)
+             src_mask = causal_mask
+
+        # --- Padding Mask (Reordered) ---
+        mask_meta = torch.zeros((B, 1), dtype=torch.bool, device=device)
+        mask_bans = (x_bans == 0) 
+        mask_picks = (x_picks == 0) 
+        raw_pad = torch.cat([mask_meta, mask_bans, mask_picks], dim=1)
+        sorted_pad = torch.gather(raw_pad, 1, sort_indices)
 
         # --- Transformer Pass ---
-        # If src_mask is provided, pass it.
-        # Note: TransformerEncoder takes 'mask' as (S, S) or (B*H, S, S).
-        
-        x_trans = self.transformer(x, mask=src_mask, src_key_padding_mask=padding_mask)
+        x_trans = self.transformer(x_sorted, mask=src_mask, src_key_padding_mask=sorted_pad)
         
         # --- Heads ---
+        # 1. Policy Head
+        policy_input = x_trans[:, :-1, :] 
+        policy_logits = self.policy_head(policy_input) # [B, 20, Vocab], Sorted Order!
         
-        # 1. Output Policy (Autoregressive Prediction)
-        # Sequence Indices:
-        # 0: Meta
-        # 1-10: Bans (Last Ban is Index 10)
-        # 11-20: Picks (Pick 1 is Index 11, Pick 10 is Index 20)
-        #
-        # Logic:
-        # We want to predict [Pick 1, Pick 2 ... Pick 10].
-        # Prediction for Pick K comes from state *before* Pick K.
-        # Pred(Pick 1) comes from Index 10 (Last Ban).
-        # Pred(Pick 2) comes from Index 11 (Pick 1).
-        # ...
-        # Pred(Pick 10) comes from Index 19 (Pick 9).
-        #
-        # Slice [10:20] selects Indices {10, 11... 19}.
-        # Length = 10.
-        # This aligns perfectly with Target [Pick 1... Pick 10].
-        
-        pick_tokens = x_trans[:, 10:20, :] # [B, 10, D]
-        policy_logits = self.policy_head(pick_tokens) # [B, 10, Vocab]
-        
-        # 2. Value Output (Win Probability)
-        # We want the probability of winning given the FULL draft so far.
-        # The most informed token is the LAST token (Index 20).
-        # Assuming Causal Mask allows Index 20 to see 0..20.
-        cls_token = x_trans[:, -1, :] # [B, D]
+        # 2. Value Output
+        cls_token = x_trans[:, -1, :] 
         value = self.value_head(cls_token) # [B, 1]
         
         return {
             'policy': policy_logits,
-            'value': value
+            'value': value,
+            'sort_indices': sort_indices,
+            'times': sorted_times
         }
 
 
@@ -195,7 +236,7 @@ class TitanBrain:
         self.model = TitanNet(vocab_size=vocab_size).to(self.device)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, weight_decay=1e-5)
         
-    def train_step(self, x_picks, x_turns, x_bans, x_mast, x_meta, y_win, src_mask=None, y_policy=None):
+    def train_step(self, x_picks, x_turns, x_bans, x_mast, x_meta, y_win, src_mask=None, y_policy=None, x_times=None):
         if not self.model: return 0.0, 0.0
         
         self.model.train()
@@ -209,30 +250,42 @@ class TitanBrain:
         x_meta  = x_meta.to(self.device).float()
         y_win   = y_win.to(self.device).float()
         
+        if x_times is not None:
+             x_times = x_times.to(self.device).long()
+        
         if src_mask is not None:
              src_mask = src_mask.to(self.device)
         
         # Forward Pass
-        out = self.model(x_picks, x_turns, x_bans, x_mast, x_meta, src_mask=src_mask)
+        out = self.model(x_picks, x_turns, x_bans, x_mast, x_meta, x_times=x_times, src_mask=src_mask)
         
         # 1. Value Loss (MSE)
         loss_val = nn.MSELoss()(out['value'], y_win)
         
-        # 2. Policy Loss (Reconstruction / CrossEntropy)
-        # logits: [B, 10, Vocab]
+        # 2. Policy Loss
         logits = out['policy'].reshape(-1, out['policy'].size(-1))
         
         if y_policy is not None:
-             # Use explicit targets (Shifted outside)
-             # y_policy should be [B, 10]
-             targets = y_policy.to(self.device).long().view(-1)
+             # Rebuild Raw Sequence of Tokens (IDs only)
+             t_meta = torch.zeros((x_picks.size(0), 1), dtype=torch.long, device=self.device)
+             
+             # Fallback if y_policy is just [xb, xp]
+             # We assume y_policy contains Targets for Bans and Picks.
+             # If user passed x_bans and x_picks as targets, we can reuse x_bans/x_picks or y_policy.
+             # Ideally re-construct 'raw_tokens' from inputs to handle reordering.
+             raw_tokens = torch.cat([t_meta, x_bans, x_picks], dim=1) # [B, 21]
+             
+             # Sort using the Model's sort_indices
+             sort_idx = out['sort_indices']
+             sorted_tokens = torch.gather(raw_tokens, 1, sort_idx) # [B, 21]
+             
+             # Targets are simply the Next Tokens in the Sorted Sequence
+             # Input: sorted[0..19] -> Target: sorted[1..20]
+             targets = sorted_tokens[:, 1:].contiguous().view(-1)
         else:
-             # Fallback (Auto-Encoder / Denoising)
              targets = x_picks.view(-1)
         
         loss_pol = nn.CrossEntropyLoss()(logits, targets)
-        
-        # Total Loss
         loss = loss_val + loss_pol
         
         loss.backward()

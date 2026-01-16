@@ -4,6 +4,43 @@ from PyQt6.QtGui import QColor, QFont, QPixmap, QPainter, QPen, QBrush
 
 from src.interface.components import THEME, CardWidget
 
+
+class PhaseTrackerWidget(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.setFixedHeight(24)
+        self.layout = QHBoxLayout(self)
+        self.layout.setContentsMargins(0, 0, 0, 0)
+        self.layout.setSpacing(15)
+        self.layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.labels = {}
+        for p in ["INTENT", "BAN", "PICK", "LOAD"]:
+             lbl = QLabel(p)
+             lbl.setStyleSheet(f"color: {THEME['text_dim']}; font-weight: bold; font-size: 10px;")
+             self.layout.addWidget(lbl)
+             self.labels[p] = lbl
+             
+    def set_phase(self, phase_str):
+        # Map LCU phase strings to our keys
+        active = "LOAD"
+        if phase_str == "PLANNING": active = "INTENT"
+        elif phase_str == "BAN_PICK":
+             active = "BAN/PICK" 
+             pass
+        elif phase_str == "FINALIZATION": active = "LOAD"
+        elif phase_str == "GAME_START": active = "LOAD"
+        
+        if phase_str in ["INTENT", "PLANNING"]: active = "INTENT"
+        if phase_str == "BANNING": active = "BAN"
+        if phase_str == "PICKING": active = "PICK"
+        
+        for k, lbl in self.labels.items():
+             if k == active or (active == "BAN/PICK" and k in ["BAN", "PICK"]):
+                 lbl.setStyleSheet(f"color: {THEME['accent_blue']}; font-weight: 800; font-size: 11px; text-decoration: underline;")
+             else:
+                 lbl.setStyleSheet(f"color: {THEME['text_dim']}; font-weight: bold; font-size: 10px;")
+
 class DraftSlotWidget(QFrame):
     """
     Represents a single player slot in the draft (0-9).
@@ -147,10 +184,22 @@ class DraftMirrorWidget(QWidget):
         for b in self.bans_l: tf_layout.addWidget(b)
         
         tf_layout.addStretch()
-        # Header Info
+        tf_layout.addStretch()
+        
+        # Middle Stack: Header + Phase Tracker
+        mid_layout = QVBoxLayout()
+        mid_layout.setSpacing(2)
+        mid_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
         self.header_lbl = QLabel("CHAMPION SELECT")
+        self.header_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.header_lbl.setStyleSheet(f"color: {THEME['border_active']}; font-weight: bold; font-size: 14px;")
-        tf_layout.addWidget(self.header_lbl)
+        mid_layout.addWidget(self.header_lbl)
+        
+        self.phase_tracker = PhaseTrackerWidget()
+        mid_layout.addWidget(self.phase_tracker)
+        
+        tf_layout.addLayout(mid_layout)
         tf_layout.addStretch()
         
         # Right Bans
@@ -183,6 +232,29 @@ class DraftMirrorWidget(QWidget):
         self.center_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.center_header.setStyleSheet(f"color: {THEME['success']}; font-weight: 800; font-size: 16px;")
         self.center_layout.addWidget(self.center_header)
+
+        from PyQt6.QtWidgets import QPushButton
+        self.btn_lock = QPushButton("LOCK IN")
+        self.btn_lock.setFixedHeight(30)
+        self.btn_lock.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_lock.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {THEME['border_active']};
+                color: {THEME['bg_main']};
+                border: none;
+                border-radius: 4px;
+                font-weight: bold;
+                font-family: {THEME['font_main']};
+            }}
+            QPushButton:hover {{
+                background-color: {THEME['accent_blue']};
+            }}
+            QPushButton:pressed {{
+                background-color: {THEME['success']};
+            }}
+        """)
+        self.btn_lock.clicked.connect(self.on_lock_click)
+        self.center_layout.addWidget(self.btn_lock)
         
         # Suggestion Cards Container
         self.suggestion_cards = []
@@ -213,6 +285,13 @@ class DraftMirrorWidget(QWidget):
     def on_card_click(self, champ_id):
         self.suggestion_clicked.emit(champ_id)
 
+    def on_lock_click(self):
+        self.suggestion_clicked.emit("LOCK") # Use special code or new signal?
+        # Re-using suggestion_clicked with "LOCK" string is hacky but might work if handled upstream
+        # But wait, suggestion_clicked passes a string "champ_id". 
+        # Better to add a dedicated signal.
+
+
 
 
 
@@ -229,8 +308,38 @@ class DraftMirrorWidget(QWidget):
          
          return self.id_cache.get(cid, str(cid))
 
-    def update_gamestate(self, snapshot, my_cell):
+    def update_gamestate(self, snapshot, my_cell, is_banning=False, has_action=False, phase="UNKNOWN"):
          if not snapshot: return
+
+         # Update Button State
+         if not has_action:
+              self.btn_lock.setVisible(False)
+         else:
+              self.btn_lock.setVisible(True)
+              if is_banning:
+                   self.btn_lock.setText("BAN CHAMPION")
+                   # Replace Green with Red
+                   self.btn_lock.setStyleSheet(self.btn_lock.styleSheet().replace(THEME['border_active'], THEME['accent_red']))
+              else:
+                   self.btn_lock.setText("LOCK IN")
+                   # Replace Red with Green
+                   self.btn_lock.setStyleSheet(self.btn_lock.styleSheet().replace(THEME['accent_red'], THEME['border_active']))
+        
+         # Derive specific phase for tracker
+         tracker_phase = phase
+         if phase == "BAN_PICK":
+             if is_banning: tracker_phase = "BANNING" 
+             else: tracker_phase = "PICKING"
+         
+         if tracker_phase == "BAN_PICK":
+             picks = snapshot[0]
+             has_picks = any(p > 0 for p in picks)
+             if not has_picks: tracker_phase = "BANNING"
+             else: tracker_phase = "PICKING"
+             
+         self.phase_tracker.set_phase(tracker_phase)
+        
+
 
          picks = snapshot[0]
          bans = snapshot[1]

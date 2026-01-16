@@ -140,11 +140,34 @@ class TitanLCU:
             print(f"[LCU Error] Hover Failed: {r.status_code} - {r.text}")
         return False
         
-    def complete_action(self, action_id):
+    def complete_action(self, action_id, data=None):
         """Locks in the selection."""
+        # Method 1: POST /complete
         endpoint = f'/lol-champ-select/v1/session/actions/{action_id}/complete'
-        r = self.request('POST', endpoint)
-        return r and r.status_code in [200, 204]
+        r = self.request('POST', endpoint, data=data) 
+        
+        status = r.status_code if r else "None"
+        # print(f"[LCU Debug] Method 1 (POST complete) for {action_id}: {status}")
+
+        if r and r.status_code in [200, 204]:
+            return True
+            
+        # Method 2: PATCH completed=True
+        print(f"[LCU Debug] POST failed ({status}). Trying PATCH {{'completed': True}}...")
+        endpoint_patch = f'/lol-champ-select/v1/session/actions/{action_id}'
+        # Merge data if exists, otherwise just completed
+        patch_data = data.copy() if data else {}
+        patch_data['completed'] = True
+        
+        r2 = self.request('PATCH', endpoint_patch, data=patch_data)
+        status2 = r2.status_code if r2 else "None"
+        
+        if r2 and r2.status_code in [200, 204]:
+            print(f"[LCU Debug] PATCH success.")
+            return True
+            
+        print(f"[LCU Error] Both Lock In methods failed. POST:{status} PATCH:{status2} Response:{r2.text if r2 else 'NoResp'}")
+        return False
 
     def get_champion_mastery(self, puuid):
         """Fetches all champion mastery entries for the summoner."""

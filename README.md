@@ -45,8 +45,8 @@ The system operates on a Hybrid Intelligence architecture designed to handle mil
 ### Installation
 1.  **Clone the Repo**
     ```bash
-    git clone https://github.com/Start-Vantage/vantage-core.git
-    cd vantage-core
+    git clone https://github.com/cibakhun/LoL-Draft-AI.git
+    cd LoL-Draft-AI
     ```
 
 2.  **Ignite the Backend**

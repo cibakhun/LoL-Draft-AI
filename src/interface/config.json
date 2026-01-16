@@ -2,7 +2,7 @@
     "theme": "Pro Esports",
     "mastery_bias": 2.0,
     "risk_level": 1.0,
-    "auto_hover": true,
+    "auto_hover": false,
     "show_probability": true,
     "ui_scale": 1.0
 }

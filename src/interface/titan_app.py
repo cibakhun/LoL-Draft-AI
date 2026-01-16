@@ -330,7 +330,6 @@ class TitanOverlay(QMainWindow):
         self.engine = None 
         
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | 
-                            Qt.WindowType.WindowStaysOnTopHint |
                             Qt.WindowType.Tool)
         # self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground) # Removed to ensure BG visibility
         screen_geo = QApplication.primaryScreen().geometry()
@@ -341,7 +340,7 @@ class TitanOverlay(QMainWindow):
         self.setGeometry(x, y, w, h)
         
         # Background
-        bg_path = os.path.join(current_dir, "assets", "draft_bg.png")
+        bg_path = os.path.join(current_dir, "assets", "background.png")
         self.bg_pixmap = QPixmap(bg_path)
         if self.bg_pixmap.isNull():
             print(f"[WARN] Could not load background from {bg_path}")
@@ -367,9 +366,13 @@ class TitanOverlay(QMainWindow):
         """
         snapshot = context.get('snapshot')
         my_cell = context.get('my_cell', -1)
+        is_banning = context.get('is_banning', False)
+        has_action = context.get('has_action', False) # New context
         
         if snapshot:
-            self.mirror.update_gamestate(snapshot, my_cell)
+
+            phase = context.get('phase', 'UNKNOWN')
+            self.mirror.update_gamestate(snapshot, my_cell, is_banning, has_action, phase)
             
         # Check if it's my turn to show suggestions
         # lane_status usually contains "Picking..." or similar.
@@ -393,6 +396,11 @@ class TitanOverlay(QMainWindow):
              for cw in self.mirror.suggestion_cards: cw.setVisible(False)
 
     def on_recommendation_clicked(self, champ_id):
+        if champ_id == "LOCK":
+            print(f"[OVERLAY] Lock Request")
+            if self.engine: self.engine.lock_in()
+            return
+            
         print(f"[OVERLAY] Card Clicked: {champ_id}")
         if self.engine:
             self.engine.act_on_suggestion(champ_id)

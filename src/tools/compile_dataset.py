@@ -72,6 +72,7 @@ def save_tensor_dict(data_lists, path):
     t_bans = torch.tensor(sanitized_bans, dtype=torch.int16)
     t_mastery = torch.tensor(data_lists['mast'], dtype=torch.float16)
     t_meta = torch.tensor(data_lists['meta'], dtype=torch.float16)
+    t_times = torch.tensor(data_lists['times'], dtype=torch.int8) # New X_times
     t_y = torch.tensor(data_lists['y'], dtype=torch.float16).unsqueeze(1)
     
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -82,6 +83,7 @@ def save_tensor_dict(data_lists, path):
         'X_bans': t_bans,
         'X_mastery': t_mastery,
         'X_meta': t_meta,
+        'X_times': t_times, # New Key
         'Y_win': t_y
     }, path)
     
@@ -109,8 +111,8 @@ def compile_dataset():
     BATCH_SIZE = 5000
     
     # Storage Lists
-    train_data = {'picks': [], 'turns': [], 'bans': [], 'mast': [], 'meta': [], 'y': []}
-    val_data = {'picks': [], 'turns': [], 'bans': [], 'mast': [], 'meta': [], 'y': []}
+    train_data = {'picks': [], 'turns': [], 'bans': [], 'mast': [], 'meta': [], 'times': [], 'y': []}
+    val_data = {'picks': [], 'turns': [], 'bans': [], 'mast': [], 'meta': [], 'times': [], 'y': []}
     
     count = 0
     skipped = 0
@@ -159,6 +161,10 @@ def compile_dataset():
                 # --- 2. EXTRACT FEATURES ---
                 picks_vec = [p['championId'] for p in sorted_parts]
                 turns_vec = list(range(1, 11))
+                
+                # [TITAN V3.5] Temporal Vectors (Pick Order 1-10)
+                # Map PID -> Turn
+                times_vec = [get_snake_turn(p['participantId']) for p in sorted_parts]
                 
                 team_bans = {100: [], 200: []}
                 for t in teams:
@@ -225,6 +231,7 @@ def compile_dataset():
                 target_dict['bans'].append(bans_vec)
                 target_dict['mast'].append(mast_vec)
                 target_dict['meta'].append(meta_blue)
+                target_dict['times'].append(times_vec)
                 target_dict['y'].append(y_blue)
                 aug_count += 1
                 
@@ -237,6 +244,7 @@ def compile_dataset():
                 target_dict['bans'].append(bans_vec)
                 target_dict['mast'].append(mast_vec)
                 target_dict['meta'].append(meta_red)
+                target_dict['times'].append(times_vec)
                 target_dict['y'].append(y_red)
                 aug_count += 1
                 

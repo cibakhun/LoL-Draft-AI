@@ -167,17 +167,44 @@ class TitanEngine:
             mastery=mastery
         )
         
+        # Detect Phase for UI Button
+        timer = session.get('timer', {})
+        phase = timer.get('phase', 'UNKNOWN')
+        
+        is_banning = False
+        has_action = False
+        local_cell = session.get('localPlayerCellId', -1)
+        actions = session.get('actions', [])
+        
+        # Logic: If phase is PLANNING (Intent), we do NOT have an action button (can't lock intent in LCU API usually)
+        # Even if LCU says action isInProgress, it's just intent declaration.
+        
+        if phase != 'PLANNING':
+            for turn in actions:
+                 for action in turn:
+                      if action.get('actorCellId') == local_cell and action.get('isInProgress', False):
+                           has_action = True
+                           if action.get('type') == 'ban':
+                                is_banning = True
+                           break
+                 if has_action: break
+        
+        context['is_banning'] = is_banning
+        context['has_action'] = has_action
+        context['phase'] = phase # Pass phase to UI for Tracker
+        
         # Context allows us to hash checks
         current_snapshot = context['snapshot'] # (xp, xb, my_pos, enemy_champ, my_champ_id)
         # Snapshot is tuple of lists/data
         # Include settings in hash to force re-calc on slider change
         s_bias = self.settings.get("mastery_bias")
         s_risk = self.settings.get("risk_level")
-        current_hash = hash(str(current_snapshot) + f"_{s_bias}_{s_risk}")
+        # Include has_action/is_banning in hash to update button state immediately
+        current_hash = hash(str(current_snapshot) + f"_{s_bias}_{s_risk}_{has_action}_{is_banning}")
         
         if current_hash == self.last_hash and self.cached_recs:
              # Return cached
-             return self.cached_winrate, self.cached_recs, "Drafting...", self.cached_lane_status, self.cached_build
+             return self.cached_winrate, self.cached_recs, "Drafting...", self.cached_lane_status, self.cached_build, context
              
         # New State
         self.last_hash = current_hash
@@ -252,11 +279,91 @@ class TitanEngine:
                                 break
                                 
                  if real_id > 0:
-                     return self.lcu.hover_champion(target_action_id, real_id)
+                     res = self.lcu.hover_champion(target_action_id, real_id)
+                     if res: print(f"[TITAN] Hovered Champion {real_id} on Action {target_action_id}")
+                     else: print(f"[TITAN] Hover Failed for {real_id}")
+                     return res
              except Exception as e:
                  print(f"Action Error: {e}")
                  traceback.print_exc()
                   
+        return False
+
+    def lock_in(self, champion_id=None): # Added champion_id parameter
+        """
+        Locks in the current selection (Pick or Ban).
+        """
+        if not self.lcu.connected: 
+            print("[TITAN] Cannot Lock In: LCU Disconnected")
+            return False
+        
+        session = self.lcu.get_champ_select()
+        if not session: 
+            print("[TITAN] Cannot Lock In: No Session")
+            return False
+        
+        # Find active action
+        local_cell = session.get('localPlayerCellId', -1)
+        actions = session.get('actions', [])
+        
+        target_action_id = -1
+        
+        print(f"[TITAN] Lock In Request - Cell: {local_cell}")
+        
+        print(f"[TITAN] Lock In Request - Cell: {local_cell}")
+        
+        found_action = None
+        
+        for turn in actions:
+            for action in turn:
+                print(f"[DEBUG] Action: ID={action.get('id')} Type={action.get('type')} Actor={action.get('actorCellId')} Prog={action.get('isInProgress')}")
+                
+                if action.get('actorCellId') == local_cell and action.get('isInProgress', False):
+                     found_action = action
+                     # We don't break immediately in debug loop so we can see all, 
+                     # but for logic we should pick the first valid one? 
+                     # Prefer 'pick' or 'ban' over others?
+                     if action.get('type') in ['pick', 'ban']:
+                          target_action_id = action.get('id')
+                          break
+            if target_action_id != -1: break
+            
+        if target_action_id == -1 and found_action:
+             # Fallback if we found one but didn't break for type check (e.g. if type was weird)
+             target_action_id = found_action.get('id')
+            
+        if target_action_id != -1 and found_action:
+             print(f"[TITAN] Completing Action ID: {target_action_id}")
+             
+             # Extract Champion ID from Action (Hover state)
+             # Bans require championId to be sent with complete, or at least hovered.
+             cid = found_action.get('championId', 0)
+             
+             # If Action doesn't have it (maybe lag), check myTeam?
+             # But for bans, 'myTeam' isn't reliable. 
+             # Only check myTeam if cid is 0 and it's a PICK action.
+             if cid == 0 and found_action.get('type') == 'pick':
+                 my_selection = next((p for p in session.get('myTeam', []) if p.get('cellId') == local_cell), None)
+                 if my_selection: cid = my_selection.get('championId', 0)
+                 
+             print(f"[TITAN] Action {target_action_id} has Champion ID: {cid}")
+             
+             data = None
+             if cid > 0:
+                 data = {"championId": cid}
+                 
+             # Try completion WITH data immediately (Best Practice)
+             res = self.lcu.complete_action(target_action_id, data=data)
+             
+             if not res:
+                  print("[TITAN] Complete Action failed (POST/PATCH).")
+                  # No further fallback needed as complete_action already does 2 methods.
+             return res
+             
+        print("[TITAN] No active action found to lock in.")
+        return False
+             
+        print("[TITAN] No active action found to lock in.")
         return False
 
 

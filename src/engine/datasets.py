@@ -57,7 +57,14 @@ class TitanMemoryDataset(Dataset):
         p = torch.clamp(p, min=0)
         # p[p > 2000] = 0
         
-        return p, t, b, m, meta, label
+        # [TITAN V3.5 UPGRADE]
+        # Check if x_times exists in data, else zeros
+        if 'X_times' in self.data:
+             times = self.data['X_times'][idx].long()
+        else:
+             times = torch.zeros_like(p) # Default 0 (Full Visibility) if missing
+        
+        return p, t, b, m, meta, times, label
 
 class BrainDataset(Dataset):
     """
@@ -145,9 +152,8 @@ class BrainDataset(Dataset):
                 red[role] = cid
         
         # Vectorize Sequence
-        # This returns (draft_ids: [10], role_ids: [10])
-        # training_mode=True allows shuffling or specific training logic if implemented
-        d_ids, r_ids = self.feature_engine.vectorize_sequence(blue, red, training_mode=True)
+        # Returns (draft_ids, spatial_seats, temporal_turns)
+        d_ids, s_ids, t_ids = self.feature_engine.vectorize_sequence(blue, red, training_mode=True)
         
         # Process Timeline
         if blob_row and blob_row[0]:
@@ -214,11 +220,25 @@ class BrainDataset(Dataset):
         # Let's return Typed Tensors to save collation work, or Numpy.
         # Numpy is standard.
         
+        # Synthesize missing V3 inputs for Online Dataset
+        # Bans: Empty (0)
+        # Mastery: Empty (0.0)
+        # Meta: Default (Skill 6.0, Patch 14.1, Side 0)
+        
+        bans = np.zeros(10, dtype=np.int64)
+        mast = np.zeros(10, dtype=np.float32)
+        meta = np.array([6.0, 14.1, 0.0], dtype=np.float32)
+        
+        input_times = np.array(t_ids, dtype=np.int64)
+        
         sample = (
-            np.array(d_ids, dtype=np.int64),    # [10]
-            np.array(r_ids, dtype=np.int64),    # [10]
-            X_time.astype(np.float32),          # [T, 20]
-            np.float32(win_label)               # Scalar
+            np.array(d_ids, dtype=np.int64),    # xp
+            np.array(s_ids, dtype=np.int64),    # xt
+            bans,                               # xb
+            mast,                               # xm
+            meta,                               # xmeta
+            input_times,                        # x_times
+            np.float32(win_label)               # y
         )
         
         # 2. Store in Cache (if room)

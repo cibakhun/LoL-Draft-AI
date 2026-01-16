@@ -178,7 +178,7 @@ class SpatialMCTS:
     def apply_move(self, state, action, slot_idx):
         picks = state[0].clone()
         picks[0][slot_idx] = action
-        return (picks, state[1], state[2], state[3], state[4])
+        return (picks, state[1], state[2], state[3], state[4], state[5])
 
     def get_next_empty_slot(self, state):
         picks = state[0][0]
@@ -192,7 +192,7 @@ class SpatialMCTS:
     def evaluate(self, state):
         self.model.eval()
         with torch.no_grad():
-            out = self.model(state[0], state[1], state[2], state[3], state[4])
+            out = self.model(state[0], state[1], state[2], state[3], state[4], x_times=state[5])
         # Returns [10, Vocab], Value
         return out['policy'][0].cpu().numpy(), out['value'].item()
 

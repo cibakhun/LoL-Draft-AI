@@ -97,15 +97,19 @@ def main():
         
         brain.model.train()
         for batch in train_loader:
-            xp, xt, xb, xm, xmeta, y = batch
+            xp, xt, xb, xm, xmeta, x_times, y = batch
             
-            # Explicit Targets: The input `xp` is [P1..P10].
-            # The model internally shifts to predict [P1..P10].
-            # So Target is `xp`.
+            # Explicit Targets: Full Draft Sequence (Bans + Picks)
+            # Input: Meta -> Output: Ban 1
+            # Input: Ban 10 -> Output: Pick 1
+            # ...
+            # Input: Pick 9 -> Output: Pick 10
             
-            targets = xp.clone().long()
+            # Target Shape: [B, 20]
+            targets = torch.cat([xb, xp], dim=1).long()
             
-            l_pol, l_val = brain.train_step(xp, xt, xb, xm, xmeta, y, src_mask=causal_mask, y_policy=targets)
+            # TITAN V3.5: Dynamic Masking via x_times
+            l_pol, l_val = brain.train_step(xp, xt, xb, xm, xmeta, y, x_times=x_times, src_mask=None, y_policy=targets)
             
             train_pol_loss += l_pol
             train_val_loss += l_val
@@ -125,19 +129,20 @@ def main():
         
         with torch.no_grad():
             for batch in val_loader:
-                xp, xt, xb, xm, xmeta, y = batch
+                xp, xt, xb, xm, xmeta, x_times, y = batch
                 xp = xp.to(brain.device).long()
                 xt = xt.to(brain.device).long()
                 xb = xb.to(brain.device).long()
                 xm = xm.to(brain.device).float()
                 xmeta = xmeta.to(brain.device).float()
+                x_times = x_times.to(brain.device).long()
                 y = y.to(brain.device).float()
                 
                 # Validation without mask to test full draft understanding
                 # (Peeking allows checking if Value Head works on full sequence)
                 mask_val = None 
                 
-                out = brain.model(xp, xt, xb, xm, xmeta, src_mask=mask_val)
+                out = brain.model(xp, xt, xb, xm, xmeta, x_times=x_times, src_mask=mask_val)
                 loss = torch.nn.MSELoss()(out['value'], y)
                 val_mse += loss.item()
                 val_batches += 1

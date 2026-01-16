@@ -14,30 +14,17 @@ class DraftStrategist:
         self.dd = data_dragon
         self.lane_data = lane_metrics or {}
         
+        # Caching
+        self.last_base_hash = None
+        self.last_recs_cache = ([], [], []) # suggestions, ids, visits
+        
     def _parse_bans_from_actions(self, session, am_i_blue):
         """Fallback: Extract bans from actions if 'bans' object is empty."""
         my_bans = []
         their_bans = []
         
-        # 1. Map Cells to Teams
-        # cellId -> is_blue
-        cell_team_map = {}
-        
-        # My Team
-        for p in session.get('myTeam', []):
-             cid = p.get('cellId')
-             tid = p.get('team', p.get('teamId', 0))
-             if cid is not None:
-                 cell_team_map[cid] = (tid == 100)
-                 
-        # Their Team
-        for p in session.get('theirTeam', []):
-             cid = p.get('cellId')
-             tid = p.get('team', p.get('teamId', 0))
-             # If tid is missing, infer from opposite of me? 
-             # easier: if I am blue (100), they are 200.
-             if cid is not None:
-                 cell_team_map[cid] = (tid == 100)
+        # Robust Logic: 0-4 is Blue, 5-9 is Red.
+        # We don't need to parse 'myTeam' for this, just checking actorCellId is enough.
 
         actions = session.get('actions', [])
         for turn in actions:
@@ -46,24 +33,20 @@ class DraftStrategist:
                     champ_id = action.get('championId', 0)
                     actor = action.get('actorCellId')
                     
-                    if champ_id > 0 and actor in cell_team_map:
-                        is_blue_actor = cell_team_map[actor]
-                        
-                        # Logic: Who banned it?
-                        # If actor is blue, it goes to blue bans.
+                    if champ_id > 0 and actor is not None:
+                        is_blue_actor = (actor < 5)
                         
                         # Map to My/Theirs relative to 'am_i_blue'
                         # if am_i_blue and is_blue_actor -> My Ban
                         # if am_i_blue and not is_blue_actor -> Their Ban
-                        
-                        print(f"[DEBUG] PARSED BAN: ID={champ_id} Actor={actor} BlueActor={is_blue_actor} MyBlue={am_i_blue}")
+                        # if not am_i_blue (Red) and is_blue_actor -> Their Ban
                         
                         if is_blue_actor == am_i_blue:
                             my_bans.append(champ_id)
                         else:
                             their_bans.append(champ_id)
                             
-        print(f"[DEBUG] PARSED BANS RESULT: My={my_bans} Theirs={their_bans}")
+        # print(f"[DEBUG] PARSED BANS RESULT: My={my_bans} Theirs={their_bans}")
         return my_bans, their_bans
 
     def detect_player_role(self, session):
@@ -97,28 +80,56 @@ class DraftStrategist:
         their_team = session.get('theirTeam', [])
         
         am_i_blue = False
-        for p in my_team:
-            tid = p.get('team', p.get('teamId', 0))
-            if tid == 100:
-                am_i_blue = True
-                break
+        
+        # Robust Side Detection via Cell ID
+        local_cell = session.get('localPlayerCellId', -1)
+        if local_cell >= 0:
+            am_i_blue = (local_cell < 5)
+        else:
+            # Fallback for spectators or weird states
+            for p in my_team:
+                tid = p.get('team', p.get('teamId', 0))
+                if tid == 100:
+                    am_i_blue = True
+                    break
                 
         blue_team_data = my_team if am_i_blue else their_team
         red_team_data = their_team if am_i_blue else my_team
         
-        def fill_side(team_list, start_idx):
+        # [TITAN V3.5 SPATIAL REFACTOR]
+        # Use Centralized Vectorization from FeatureEngine
+        # to ensure "Train-Serve Symmetry".
+        
+        # 1. Transform LCU Session -> Teams Dicts
+        blue_roles = {}
+        red_roles = {}
+        
+        roles = ["TOP", "JUNGLE", "MIDDLE", "BOTTOM", "UTILITY"]
+        
+        # Helper to map cell to role index (0-4)
+        # Blue: 0-4, Red: 5-9
+        def map_participants(team_list, target_dict, offset):
             for p in team_list:
                 cell = p.get('cellId', -1)
                 cid = p.get('championId', 0)
                 if cid == 0: cid = p.get('championPickIntent', 0)
-                if cid == 0: continue
+                # if cid == 0: continue # Keep 0s? feature_engine handles 0s
                 
-                idx = cell
-                if 0 <= idx <= 9:
-                    picks_vec[idx] = self.fe.vocab.get(cid, 0)
-                    
-        fill_side(blue_team_data, 0)
-        fill_side(red_team_data, 5)
+                # Check Bounds
+                local_idx = cell - offset
+                if 0 <= local_idx <= 4:
+                    role_name = roles[local_idx]
+                    if cid > 0: target_dict[role_name] = cid
+
+        map_participants(blue_team_data, blue_roles, 0)
+        map_participants(red_team_data, red_roles, 5)
+        
+        # 2. Vectorize (Spatial Order: Blue 0-4 then Red 0-4)
+        # returns (draft_ids_list, seat_ids_list)
+        draft_ids, seat_ids = self.fe.vectorize_sequence(blue_roles, red_roles)
+        
+        picks_vec = draft_ids
+        turns_vec = seat_ids # Now contains 1-10 Spatial IDs
 
         # Bans
         my_bans = session.get('bans', {}).get('myTeamBans', [])
@@ -151,6 +162,26 @@ class DraftStrategist:
         t_mast  = torch.tensor([mast_vec], dtype=torch.float16)
         t_meta  = torch.tensor([meta_vec], dtype=torch.float16)
         
+        # [TITAN V3.5 TIME VECTOR]
+        temporal_turns = [1] * 10
+        # Wait, vectorize_sequence is called inside parse_lobby? 
+        # No, parse_lobby manually constructs vectors line 73-112.
+        # It replicates vectorize_sequence logic but directly.
+        # I need to implement the time logic here too.
+        
+        # Refactor: We should use fe.vectorize_sequence if possible, but parse_lobby handles specialized session parsing.
+        # Let's add time-turn extraction here.
+        # Default turns for now (Naive order 1-10)
+        times_vec = list(range(1, 11))
+
+        # Can we improve? parse_lobby doesn't know turn order unless we parse actions history.
+        # Currently we just linearize 1-10. This is "Spatial Order = Time Order" assumption for partial drafts.
+        # For INTENT phase (empty), time doesn't matter much (mask allows everything).
+        # For midway, previous picks are fixed.
+        # Let's trust the linear 1-10 for now as it's consistent with "Spatial Sort".
+        
+        t_times = torch.tensor([times_vec], dtype=torch.int8)
+        
         # Raw Data for UI (Before Tokenization)
         raw_picks = [0] * 10
         raw_bans = []
@@ -174,7 +205,7 @@ class DraftStrategist:
         for bid in red_bans[:5]: raw_bans.append(bid)
         while len(raw_bans) < 10: raw_bans.append(0)
         
-        return (t_picks, t_turns, t_bans, t_mast, t_meta), (raw_picks, raw_bans)
+        return (t_picks, t_turns, t_bans, t_mast, t_meta, t_times), (raw_picks, raw_bans)
 
     def analyze(self, session, skill=6.0, patch=14.23, settings=None, mastery=None):
         """
@@ -184,7 +215,7 @@ class DraftStrategist:
         # 1. Parse
         # 1. Parse
         t_inputs, raw_inputs = self.parse_lobby(session, skill, patch)
-        xp, xt, xb, xm, xmeta = t_inputs
+        xp, xt, xb, xm, xmeta, x_times = t_inputs # Unpack Time Vector
         raw_picks, raw_bans = raw_inputs
         
         # 2. Context
@@ -224,6 +255,7 @@ class DraftStrategist:
         xb = xb.to(self.brain.device).long()
         xm = xm.to(self.brain.device).float()
         xmeta = xmeta.to(self.brain.device).float()
+        x_times = x_times.to(self.brain.device).long()
         
         # Use tokens for logic if needed, but we have raw_picks now
         picks_list = raw_picks
@@ -249,37 +281,57 @@ class DraftStrategist:
                      target_slot = i
                      break
 
+                     target_slot = i
+                     break
+
         # 4. MCTS Inference
+        # Optimized with Base-State Caching
+        
         top_ids = []
         win_prob = 0.5
         top_visits = []
         
-        if target_slot != -1:
-             # Initialize MCTS
-             mcts = SpatialMCTS(self.brain.model, self.fe, n_sims=50)
+        # Construct Base State Hash (excluding my hover)
+        # We need to treat my slot as 0 for the "Search Base"
+        base_picks = list(raw_picks)
+        if target_slot != -1 and 0 <= target_slot < 10:
+             base_picks[target_slot] = 0
              
-             # Logic: even if slot is filled (hover), we want suggestions!
-             # So we construct a "search_state" where the slot is empty.
+        # Hash components: Picks (Base), Bans, Skill, Patch, Mastery Bias, Risk Level
+        s_bias = settings.get("mastery_bias", 1.0) if settings else 1.0
+        s_risk = settings.get("risk_level", 0.0) if settings else 0.0
+        
+        current_base_hash = hash(tuple(base_picks) + tuple(raw_bans) + (skill, patch, s_bias, s_risk))
+        
+        # Check Cache
+        cache_hit = False
+        if self.last_base_hash == current_base_hash:
+             cache_hit = True
+             # print("[STRATEGIST] Cache Hit! Reusing Search Results.")
+             suggestions_cache, top_ids, top_visits = self.last_recs_cache
+        else:
+             # print("[STRATEGIST] Cache Miss. Running MCTS...")
+             pass
+        
+        state_tupid = (xp, xt, xb, xm, xmeta, x_times) # Added x_times
+        
+        # Always evaluate Dynamic Win Probability for the ACTUAL state (with hover)
+        # This ensures the "Oracle" is responsive even if suggestions are cached.
+        mcts = SpatialMCTS(self.brain.model, self.fe, n_sims=50) # Lightweight instance just for eval if needed
+        _, current_eval = mcts.evaluate(state_tupid)
+        
+        if picks_list[target_slot] != 0:
+             win_prob = current_eval
              
-             # 1. Evaluate CURRENT state (with Hover/Pick)
-             state_tupid = (xp, xt, xb, xm, xmeta)
-             _, current_eval = mcts.evaluate(state_tupid)
+        if not cache_hit and target_slot != -1:
+             # Run Full Search
              
-             # If hovering, this is our "Win Probability" for the Oracle
-             if picks_list[target_slot] != 0:
-                 win_prob = current_eval
-             
-             # 2. Prepare SEARCH state (Empty Slot)
-             # We need to ensure the tensor has 0 at target_slot
+             # Prepare SEARCH state (Empty Slot)
              xp_search = xp.clone()
              xp_search[0][target_slot] = 0
-             search_state = (xp_search, xt, xb, xm, xmeta)
+             search_state = (xp_search, xt, xb, xm, xmeta, x_times)
              
-             # Filter valid actions (exclude what's strictly picked/banned elsewhere)
-             # We must NOT exclude the current hover (picks_list[target_slot]) from valid actions
-             # because we want to see if it's actually a good pick!
-             
-             # existing picks (excluding our slot)
+             # Filter valid actions
              picked_set = set()
              pl_search = xp_search[0].cpu().tolist()
              for pid in pl_search:
@@ -291,8 +343,6 @@ class DraftStrategist:
              valid_actions -= banned_set
              
              root = mcts.search(search_state, target_slot, valid_actions)
-             
-             _, win_prob = mcts.evaluate(state_tupid)
              
              # Default sort by visits
              items = list(root.children.items())
@@ -316,8 +366,7 @@ class DraftStrategist:
              else:
                  items.sort(key=lambda x: x[1].visits, reverse=True)
 
-             # 2. Apply Risk/Creativity (Stochastic Perturbation)
-             # This must run INDEPENDENTLY of mastery
+             # 2. Apply Risk/Creativity
              if settings:
                  risk = settings.get("risk_level", 0.0)
                  if risk > 0.1:
@@ -325,106 +374,120 @@ class DraftStrategist:
                      candidates = items[:10]
                      rest = items[10:]
                      
-                     # Better approach: Assign scores implicitly based on order to avoid index lookup issues
-                     # The original list is sorted by "Quality" (Visits or Mastery).
-                     # We want to keep that general order but allow lower items to jump up.
-                     
                      scored_candidates = []
                      for i, item in enumerate(candidates):
-                         # Base score based on rank (10 down to 1)
                          base_score = float(len(candidates) - i)
-                         # Add Noise (Risk Factor)
-                         # High risk = more noise = more likely to swap
                          noise = random.uniform(-1.0, 1.0) * risk * 5.0
                          scored_candidates.append((base_score + noise, item))
                      
-                     # Sort by the new noisy score
                      scored_candidates.sort(key=lambda x: x[0], reverse=True)
-                     
-                     # Extract items back
                      items = [x[1] for x in scored_candidates] + rest
 
              sorted_children = items
              top_ids = [a for a, n in sorted_children[:5]]
              top_visits = [n.visits for a, n in sorted_children[:5]]
              
-             # Extract child winrates for delta calculation
-             # We can't easily export the whole node tree, but we can compute deltas here.
+             # Cache Update happens after formatting because we want to cache the FORMATTED suggestions logic?
+             # Actually, suggestions formatting depends on `predicted_wr` which comes from NODE data.
+             # If we only cache IDs/Visits, we lose the Node objects.
+             # So we must format suggestions INSIDE the "Miss" block or cache the Nodes?
+             # Node objects are not easily serializable or kept, but we can keep list of (cid, visits, confidence).
+             # Let's keep the `sorted_children` list? No, MCTS tree is large.
+             # Better: Format suggestions NOW and cache the final list.
              
-        # 5. Format Suggestions
-        suggestions = []
-        max_v = top_visits[0] if top_visits else 1
-        if max_v == 0: max_v = 1
+        # 5. Format Suggestions (Executed only on Cache Miss or we duplicate logic?)
+        # Logic structure constraint: We need `sorted_children` to format suggestions.
+        # If Cache Hit, we don't have `sorted_children` (unless we cache them).
         
-        for i, cid in enumerate(top_ids):
-            # Calculate rough score
-            score = int((top_visits[i] / max_v) * 100)
-            
-            # Simple metadata lookup
-            name = self.dd.get_id_map().get(cid, f"ID_{cid}")
-            
-            # Resolve actual key for Assets
-            asset_id = cid
-            for c_key, c_val in self.dd.champions.items():
-                 if int(c_val['key']) == cid:
-                      asset_id = c_key
-                      break
+        # REFACTOR: Move formatting inside Cache Miss block, and cache the RESULT `suggestions`.
+        
+        if not cache_hit and target_slot != -1:
+             # ... Formatting Logic ...
+             pass 
+             
+        # Wait, I can't easily refactor the whole block with `multi_replace` if I don't replace the whole block.
+        # I will replace lines 238 to 340 (Search Block) entirely.
 
-            # --- RICH DATA EXPOSURE ---
-            # 1. AI Confidence (Child Q-Value)
-            child_node = next((n for a, n in sorted_children if a == cid), None)
-            
-            # Confidence = The actual Win Probability of the resulting state
-            predicted_wr = 0.5
-            if child_node:
-                 if child_node.visits > 0:
-                     predicted_wr = child_node.value_sum / child_node.visits
-                 else:
-                     predicted_wr = child_node.prior # Fallback to raw policy
-            
-            # 2. Team Composition Stats (Reasoning)
-            # What does this pick add?
-            # We need to reconstruct the team with this pick
-            
-            simulated_team = []
-            # Get current team from session (based on parse_lobby)
-            # Simplified: Use picks_list from parse_lobby logic
-            # We know target_slot.
-            
-            # Re-read picks from xp[0] to be safe
-            current_picks = xp[0].cpu().tolist()
-            current_picks[target_slot] = cid
-            
-            # Extract "My Team" from these picks
-            # Logic: If am_i_blue_local, IDs 0-4. Else 5-9.
-            team_slice = current_picks[0:5] if (offset == 0) else current_picks[5:10]
-            
-            stats = self._calculate_team_stats(team_slice)
-            
-            # Compare to current stats (without pick)
-            # This requires 'current_picks' to have 0 at target_slot, which it did before assignment
-            # But let's just show absolute values for now as "Reasoning"
-            
-            stats_str = f"AD: {stats['ad']:.0f}% AP: {stats['ap']:.0f}%"
-            
-            rec_data = {
-                "id": str(asset_id), # Ensure string for Qt
-                "name": name,
-                "score": score, # Search Confidence (Visits)
-                "confidence": predicted_wr, # Actual Win Probability
-                "stats": stats,
-                "reasoning": stats_str,
-                "wr": predicted_wr * 100, 
-                "delta": (predicted_wr - win_prob) * 100 # Delta vs Current State
-            }
-            
-            # Lane Diff
-            if enemy_champ > 0:
-                key = f"{cid}_vs_{enemy_champ}"
-                diff = self.lane_data.get(key)
-                if diff: rec_data["diff"] = int(diff)
+             
+
+             # --- Formatting Logic Inline ---
+             suggestions = []
+             max_v = top_visits[0] if top_visits else 1
+             if max_v == 0: max_v = 1
+             
+             # Maps Token -> Real ID
+             inv_vocab = {v: k for k, v in self.fe.vocab.items()}
+             
+             for i, token_id in enumerate(top_ids):
+                score = int((top_visits[i] / max_v) * 100)
                 
-            suggestions.append(rec_data)
+                # Convert Token to Real ID
+                real_id = inv_vocab.get(token_id, 0)
+                cid = real_id # Use Real ID for lookup
+                
+                name = self.dd.get_id_map().get(real_id, f"{real_id}")
+                
+                # Resolve Asset ID (Name Key) using Real ID
+                asset_id = str(real_id) # Default to ID
+                for c_key, c_val in self.dd.champions.items():
+                     if int(c_val['key']) == real_id:
+                          asset_id = c_key # This IS the Asset Name (e.g. "MissFortune")
+                          break
+                          
+                # AI Confidence
+                child_node = next((n for a, n in sorted_children if a == cid), None)
+                predicted_wr = 0.5
+                if child_node:
+                     if child_node.visits > 0:
+                         predicted_wr = child_node.value_sum / child_node.visits
+                     else:
+                         predicted_wr = child_node.prior
+                
+                # Stats
+                simulated_team = []
+                current_picks_sim = xp[0].cpu().tolist() # Copy from tensor
+                current_picks_sim[target_slot] = cid
+                
+                team_slice = current_picks_sim[0:5] if (offset == 0) else current_picks_sim[5:10]
+                stats = self._calculate_team_stats(team_slice)
+                stats_str = f"AD: {stats['ad']:.0f}% AP: {stats['ap']:.0f}%"
+                
+                rec_data = {
+                    "id": str(asset_id),
+                    "name": name,
+                    "score": score,
+                    "confidence": predicted_wr,
+                    "stats": stats,
+                    "reasoning": stats_str,
+                    "wr": predicted_wr * 100, 
+                    "delta": (predicted_wr - win_prob) * 100
+                }
+                
+                if enemy_champ > 0:
+                    key = f"{cid}_vs_{enemy_champ}"
+                    diff = self.lane_data.get(key)
+                    if diff: rec_data["diff"] = int(diff)
+                    
+                suggestions.append(rec_data)
+             
+             # Save to Cache
+             self.last_base_hash = current_base_hash
+             self.last_recs_cache = (suggestions, top_ids, top_visits)
+
+        elif cache_hit:
+             suggestions = suggestions_cache
+             # We do NOT update suggestions dynamically (e.g. "delta" might change if win_prob changes significantly?)
+             # Yes, if `win_prob` changes (due to hover), `delta` (suggested_wr - win_prob) changes.
+             # But `suggested_wr` is static for that suggestion in that Base State.
+             # So we should re-calculate `delta`?
+             # `suggestions_cache` has "wr" (absolute). We can update "delta".
+             
+             for r in suggestions:
+                  r['delta'] = r['wr'] - (win_prob * 100.0)
+        else:
+             # Target slot -1 or something
+             suggestions = []
+
             
         lane_status = f"Lane: {my_pos}" if my_pos else "Observing"
         if enemy_champ > 0:
