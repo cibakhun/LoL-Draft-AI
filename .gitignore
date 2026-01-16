@@ -62,5 +62,5 @@ _BACKUP*/
 _LEGACY_BACKUP*/
 
 # --- Custom Ignores ---
-overlay/
+# overlay/
 idea/
