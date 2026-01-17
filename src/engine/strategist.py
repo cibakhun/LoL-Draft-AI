@@ -125,8 +125,8 @@ class DraftStrategist:
         map_participants(red_team_data, red_roles, 5)
         
         # 2. Vectorize (Spatial Order: Blue 0-4 then Red 0-4)
-        # returns (draft_ids_list, seat_ids_list)
-        draft_ids, seat_ids = self.fe.vectorize_sequence(blue_roles, red_roles)
+        # returns (draft_ids, seat_ids, temporal_turns)
+        draft_ids, seat_ids, temporal_turns = self.fe.vectorize_sequence(blue_roles, red_roles)
         
         picks_vec = draft_ids
         turns_vec = seat_ids # Now contains 1-10 Spatial IDs
@@ -163,22 +163,8 @@ class DraftStrategist:
         t_meta  = torch.tensor([meta_vec], dtype=torch.float16)
         
         # [TITAN V3.5 TIME VECTOR]
-        temporal_turns = [1] * 10
-        # Wait, vectorize_sequence is called inside parse_lobby? 
-        # No, parse_lobby manually constructs vectors line 73-112.
-        # It replicates vectorize_sequence logic but directly.
-        # I need to implement the time logic here too.
-        
-        # Refactor: We should use fe.vectorize_sequence if possible, but parse_lobby handles specialized session parsing.
-        # Let's add time-turn extraction here.
-        # Default turns for now (Naive order 1-10)
-        times_vec = list(range(1, 11))
-
-        # Can we improve? parse_lobby doesn't know turn order unless we parse actions history.
-        # Currently we just linearize 1-10. This is "Spatial Order = Time Order" assumption for partial drafts.
-        # For INTENT phase (empty), time doesn't matter much (mask allows everything).
-        # For midway, previous picks are fixed.
-        # Let's trust the linear 1-10 for now as it's consistent with "Spatial Sort".
+        # Use vectorized temporal turns from FeatureEngine
+        times_vec = temporal_turns
         
         t_times = torch.tensor([times_vec], dtype=torch.int8)
         

@@ -1,33 +1,30 @@
-from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QGridLayout)
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
-from PyQt6.QtGui import QColor, QFont, QPixmap, QPainter, QPen, QBrush
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, QFrame, QGridLayout, QPushButton, QGraphicsDropShadowEffect)
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPropertyAnimation, QEasingCurve, QTimer, pyqtProperty, QPointF
+from PyQt6.QtGui import QColor, QFont, QPixmap, QPainter, QPen, QBrush, QPainterPath, QLinearGradient
+import math
 
-from src.interface.components import THEME, CardWidget
-
+from src.interface.components import THEME, CardWidget, HexFrame, HexEffect, AnimatedHexFrame
 
 class PhaseTrackerWidget(QWidget):
     def __init__(self):
         super().__init__()
-        self.setFixedHeight(24)
+        self.setFixedHeight(30)
         self.layout = QHBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(15)
+        self.layout.setSpacing(20)
         self.layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.labels = {}
         for p in ["INTENT", "BAN", "PICK", "LOAD"]:
              lbl = QLabel(p)
-             lbl.setStyleSheet(f"color: {THEME['text_dim']}; font-weight: bold; font-size: 10px;")
+             lbl.setStyleSheet(f"color: {THEME['text_dim']}; font-weight: bold; font-size: 11px; letter-spacing: 1px;")
              self.layout.addWidget(lbl)
              self.labels[p] = lbl
              
     def set_phase(self, phase_str):
-        # Map LCU phase strings to our keys
         active = "LOAD"
         if phase_str == "PLANNING": active = "INTENT"
-        elif phase_str == "BAN_PICK":
-             active = "BAN/PICK" 
-             pass
+        elif phase_str == "BAN_PICK": active = "BAN/PICK" 
         elif phase_str == "FINALIZATION": active = "LOAD"
         elif phase_str == "GAME_START": active = "LOAD"
         
@@ -36,242 +33,591 @@ class PhaseTrackerWidget(QWidget):
         if phase_str == "PICKING": active = "PICK"
         
         for k, lbl in self.labels.items():
-             if k == active or (active == "BAN/PICK" and k in ["BAN", "PICK"]):
-                 lbl.setStyleSheet(f"color: {THEME['accent_blue']}; font-weight: 800; font-size: 11px; text-decoration: underline;")
-             else:
-                 lbl.setStyleSheet(f"color: {THEME['text_dim']}; font-weight: bold; font-size: 10px;")
+            if k == active or (active == "BAN/PICK" and k in ["BAN", "PICK"]):
+                lbl.setStyleSheet(f"color: {THEME['accent_blue']}; font-weight: 800; font-size: 12px; text-decoration: none;")
+                # Glow effect (HexEffect sets offset to 0,0)
+                glow = HexEffect(THEME['accent_blue'], 15)
+                lbl.setGraphicsEffect(glow)
+            else:
+                lbl.setStyleSheet(f"color: {THEME['text_dim']}; font-weight: bold; font-size: 11px;")
+                lbl.setGraphicsEffect(None)
 
-class DraftSlotWidget(QFrame):
+
+
+class DraftSlotWidget(HexFrame):
     """
     Represents a single player slot in the draft (0-9).
-    Mirroring the LCU client: Splash/Icon, Name, Spells.
     """
-    clicked = pyqtSignal(int) # Emits cell_id
+    clicked = pyqtSignal(int)
 
     def __init__(self, cell_id, loader):
-        super().__init__()
+        # Determine color key based on side
+        side_color = 'accent_blue' if cell_id < 5 else 'accent_red'
+        super().__init__(active=False, color_key="border_norm") 
+        
         self.cell_id = cell_id
         self.loader = loader
+        self.side_color = side_color
+        self._is_active_turn = False  # Track if this is the active player's turn
         
-        self.setFixedHeight(100) # Similar aspect ratio to client slot
-        self.setFrameShape(QFrame.Shape.StyledPanel)
+        self.setFixedHeight(85)  # Taller slots for premium feel
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
         
-        self.setStyleSheet(f"""
-            QFrame {{
-                background-color: {THEME['bg_main']};
-                border: 1px solid {THEME['border_norm']};
-                border-radius: 4px;
-            }}
-            QFrame:hover {{
-                border: 1px solid {THEME['border_active']};
-            }}
-        """)
+        # Hover animation
+        self._hover_progress = 0.0
+        self.anim_hover = QPropertyAnimation(self, b"hover_progress")
+        self.anim_hover.setDuration(200)
+        self.anim_hover.setEasingCurve(QEasingCurve.Type.OutCubic)
         
-        # Layout: [Icon/Splash] [Name/Role/Spells]
+        # Pulsing glow animation
+        self._glow_phase = 0.0
+        self._spotlight_particles = []  # Particles for active turn spotlight
+        self._glow_timer = QTimer(self)
+        self._glow_timer.timeout.connect(self._tick_glow)
+        self._glow_timer.setInterval(25)  # 40 FPS for smoother breathing
+        
+        # Layout: [Icon] [Name/Status]
         self.layout = QHBoxLayout(self)
-        self.layout.setContentsMargins(5, 5, 5, 5)
-        self.layout.setSpacing(10)
+        self.layout.setContentsMargins(15, 8, 15, 8)
+        self.layout.setSpacing(15)
         
         # 1. Champion Icon
         self.icon_lbl = QLabel()
-        self.icon_lbl.setFixedSize(60, 60)
-        self.icon_lbl.setStyleSheet(f"background-color: #000; border-radius: 30px; border: 2px solid {THEME['border_norm']};")
+        self.icon_lbl.setFixedSize(52, 52)
+        self.icon_lbl.setStyleSheet(f"background-color: rgba(0,0,0,0.5); border-radius: 26px; border: 2px solid {THEME['border_norm']};")
         self.layout.addWidget(self.icon_lbl)
         
         # 2. Info Stack
         self.info_layout = QVBoxLayout()
+        self.info_layout.setSpacing(4)
+        self.info_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         self.layout.addLayout(self.info_layout)
         
-        self.name_lbl = QLabel("Summoner")
-        self.name_lbl.setStyleSheet(f"color: {THEME['text_main']}; font-weight: bold; font-size: 11px;")
+        self.name_lbl = QLabel("SUMMONER")
+        self.name_lbl.setStyleSheet(f"color: {THEME['text_main']}; font-weight: 700; font-size: 12px; letter-spacing: 1px;")
         self.info_layout.addWidget(self.name_lbl)
         
-        self.status_lbl = QLabel("Picking...")
-        self.status_lbl.setStyleSheet(f"color: {THEME['text_dim']}; font-size: 10px;")
+        self.status_lbl = QLabel("WAITING")
+        self.status_lbl.setStyleSheet(f"color: {THEME['text_dim']}; font-size: 10px; font-weight: 600;")
         self.info_layout.addWidget(self.status_lbl)
         
-        # Active State
-        self.is_active = False
+        self.layout.addStretch()
+
+        # Selection Glow
+        self.glow = HexEffect(THEME['border_active'], 25)
+        self.glow.setEnabled(False)
+        self.setGraphicsEffect(self.glow)
+    
+    @pyqtProperty(float)
+    def hover_progress(self):
+        return self._hover_progress
+    
+    @hover_progress.setter
+    def hover_progress(self, val):
+        self._hover_progress = val
+        brightness = 1.0 + (0.2 * val)
+        self.setStyleSheet(f"background-color: rgba({int(15 * brightness)}, {int(25 * brightness)}, {int(40 * brightness)}, {int(200 + 40 * val)});")
+        self.update()
+    
+    def enterEvent(self, event):
+        self.anim_hover.stop()
+        self.anim_hover.setStartValue(self._hover_progress)
+        self.anim_hover.setEndValue(1.0)
+        self.anim_hover.start()
+        super().enterEvent(event)
+    
+    def leaveEvent(self, event):
+        self.anim_hover.stop()
+        self.anim_hover.setStartValue(self._hover_progress)
+        self.anim_hover.setEndValue(0.0)
+        self.anim_hover.start()
+        super().leaveEvent(event)
+    
+    def _tick_glow(self):
+        """Breathing glow with spotlight particles."""
+        self._glow_phase += 0.08
+        intensity = 0.5 + 0.5 * math.sin(self._glow_phase)
+        self.glow.setBlurRadius(18 + 18 * intensity)
         
-    def update_state(self, champ_id, summoner_name, is_active, is_self=False):
-        self.is_active = is_active
-        if is_active:
-             self.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {THEME['bg_glass']};
-                    border: 1px solid {THEME['accent_blue'] if is_self else THEME['border_active']};
-                    border-radius: 4px;
-                }}
-             """)
+        base_color = QColor(THEME['border_active'])
+        bright_color = QColor(THEME['accent_blue'])
+        r = int(base_color.red() + (bright_color.red() - base_color.red()) * intensity)
+        g = int(base_color.green() + (bright_color.green() - base_color.green()) * intensity)
+        b = int(base_color.blue() + (bright_color.blue() - base_color.blue()) * intensity)
+        self.glow.setColor(QColor(r, g, b))
+        
+        # Spawn spotlight particles when active
+        if self._is_active_turn and len(self._spotlight_particles) < 12:
+            if math.sin(self._glow_phase * 2) > 0.7:  # Periodic spawning
+                import random
+                self._spotlight_particles.append({
+                    'x': random.uniform(5, self.width() - 5),
+                    'y': self.height(),
+                    'vy': random.uniform(-1.5, -0.8),
+                    'size': random.uniform(1.5, 3),
+                    'life': 1.0
+                })
+        
+        # Update particles
+        new_particles = []
+        for p in self._spotlight_particles:
+            p['y'] += p['vy']
+            p['life'] -= 0.02
+            if p['life'] > 0 and p['y'] > 0:
+                new_particles.append(p)
+        self._spotlight_particles = new_particles
+        
+        self.update()
+    
+    def paintEvent(self, event):
+        super().paintEvent(event)  # Draw base HexFrame
+        
+        if self._is_active_turn:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            
+            w, h = self.width(), self.height()
+            intensity = 0.5 + 0.5 * math.sin(self._glow_phase)
+            
+            # Spotlight gradient from bottom
+            spotlight_grad = QLinearGradient(0, h, 0, 0)
+            spotlight_alpha = int(40 + 30 * intensity)
+            spotlight_grad.setColorAt(0, QColor(10, 200, 180, spotlight_alpha))
+            spotlight_grad.setColorAt(0.5, QColor(10, 200, 180, int(spotlight_alpha * 0.3)))
+            spotlight_grad.setColorAt(1, QColor(10, 200, 180, 0))
+            
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(spotlight_grad))
+            painter.drawRoundedRect(self.rect(), 6, 6)
+            
+            # Draw spotlight particles
+            for p in self._spotlight_particles:
+                alpha = int(180 * p['life'])
+                painter.setBrush(QColor(10, 220, 200, alpha))
+                painter.drawEllipse(QPointF(p['x'], p['y']), p['size'], p['size'])
+            
+            # "YOUR TURN" text (right side)
+            text_alpha = int(200 + 55 * intensity)
+            painter.setPen(QColor(THEME['accent_blue'].replace('#', ''), text_alpha))
+            font = QFont(THEME['font_main'], 9, QFont.Weight.Bold)
+            font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)
+            painter.setFont(font)
+            painter.drawText(self.rect().adjusted(0, 0, -15, 0), 
+                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, 
+                           "YOUR TURN")
+
+    def update_state(self, champ_id, summoner_name, is_active, is_self=False, is_banning=False):
+        self.set_active(is_active or is_self)
+        self.glow.setEnabled(is_active or is_self)
+        self._is_active_turn = is_active
+        
+        # Start/stop pulsing glow timer
+        if is_active or is_self:
+            self._glow_timer.start()
         else:
-             self.setStyleSheet(f"""
-                QFrame {{
-                    background-color: {THEME['bg_main']};
-                    border: 1px solid {THEME['border_norm']};
-                    border-radius: 4px;
-                }}
-             """)
-             
-        self.name_lbl.setText(summoner_name if summoner_name else f"Summoner {self.cell_id}")
+            self._glow_timer.stop()
+            self._spotlight_particles = []  # Clear particles when not active
+        
+        # Update colors based on activity
+        if is_active:
+             self.glow.setColor(QColor(THEME['border_active']))
+             self.status_lbl.setText("BANNING" if is_banning else "PICKING")
+             text_color = THEME['accent_red'] if is_banning else THEME['border_active']
+             self.status_lbl.setStyleSheet(f"color: {text_color}; font-size: 10px; font-weight: bold;")
+        elif is_self:
+             self.glow.setColor(QColor(THEME['accent_blue']))
+        else:
+             self.status_lbl.setText("LOCKED" if champ_id else "WAITING")
+             self.status_lbl.setStyleSheet(f"color: {THEME['text_dim']}; font-size: 10px;")
+
+        self.name_lbl.setText(summoner_name if summoner_name else f"SUMMONER {self.cell_id}")
         
         # Icon
         if champ_id:
-            pix = self.loader.circular_mask(self.loader.get_champ_icon_path(str(champ_id)), 60)
+            pix = self.loader.hexagon_mask(self.loader.get_champ_icon_path(str(champ_id)), 48, THEME['border_active'] if is_active or is_self else THEME['border_norm'], 2)
             self.icon_lbl.setPixmap(pix)
-            self.status_lbl.setText("LOCKED" if not is_active else "PICKING")
-            self.status_lbl.setStyleSheet(f"color: {THEME['success'] if not is_active else THEME['text_main']}; font-size: 10px;")
-        else: # None/0
-            # Default empty/ban icon or role
+            self.icon_lbl.setStyleSheet(f"background-color: transparent; border: none;")
+            if not is_active: self.status_lbl.setText("LOCKED")
+        else:
             self.icon_lbl.clear()
-            self.status_lbl.setText("PICKING..." if is_active else "WAITING")
+            self.icon_lbl.setStyleSheet(f"background-color: #000; border-radius: 4px; border: 2px solid {THEME['border_norm']};")
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.clicked.emit(self.cell_id)
 
-class BanSlotWidget(QLabel):
-    def __init__(self, loader):
+class BanSlotWidget(QWidget):
+    """Ban slot with premium vortex→shatter→settle animation."""
+    def __init__(self, loader, cell_id):
         super().__init__()
         self.loader = loader
-        self.setFixedSize(32, 32)
-        self.setStyleSheet(f"background-color: #111; border: 1px solid {THEME['border_norm']}; border-radius: 16px;")
+        self.cell_id = cell_id
+        self.setFixedSize(44, 44)  # Slightly larger for effects
+        
+        self._champ_pixmap = None
+        self._anim_progress = 0.0
+        self._is_banned = False
+        self._vortex_particles = []  # Particle system for vortex
+        self._shatter_fragments = []  # Fragment positions for shatter
+        
+        # Animation (0→1 over 1000ms for more drama)
+        self.anim_ban = QPropertyAnimation(self, b"anim_progress")
+        self.anim_ban.setDuration(1000)
+        self.anim_ban.setEasingCurve(QEasingCurve.Type.OutCubic)
+        
+        # Continuous update timer for particles
+        self._particle_timer = QTimer(self)
+        self._particle_timer.timeout.connect(self._tick_particles)
+        self._particle_timer.setInterval(25)
+    
+    @pyqtProperty(float)
+    def anim_progress(self):
+        return self._anim_progress
+    
+    @anim_progress.setter
+    def anim_progress(self, val):
+        self._anim_progress = val
+        self.update()
+    
+    def _tick_particles(self):
+        """Update vortex particles."""
+        import random
+        cx, cy = self.width() / 2, self.height() / 2
+        
+        # Update vortex particles
+        new_vortex = []
+        for p in self._vortex_particles:
+            # Spiral inward
+            dx = cx - p['x']
+            dy = cy - p['y']
+            dist = math.sqrt(dx*dx + dy*dy)
+            if dist > 3:
+                p['x'] += dx * 0.08 + p['vx']
+                p['y'] += dy * 0.08 + p['vy']
+                # Add rotation
+                p['vx'] = -dy * 0.05
+                p['vy'] = dx * 0.05
+                p['life'] -= 0.03
+                if p['life'] > 0:
+                    new_vortex.append(p)
+        self._vortex_particles = new_vortex
+        
+        # Spawn new vortex particles during phase 1
+        if self._anim_progress < 0.4 and len(self._vortex_particles) < 20:
+            angle = random.uniform(0, 360)
+            radius = 25 + random.uniform(0, 10)
+            self._vortex_particles.append({
+                'x': cx + math.cos(math.radians(angle)) * radius,
+                'y': cy + math.sin(math.radians(angle)) * radius,
+                'vx': 0, 'vy': 0,
+                'size': random.uniform(1.5, 3),
+                'life': 1.0
+            })
+        
+        self.update()
         
     def set_champ(self, champ_id):
+        import random
         if champ_id:
-            pix = self.loader.circular_mask(self.loader.get_champ_icon_path(str(champ_id)), 32)
-            self.setPixmap(pix)
+            path = self.loader.get_champ_icon_path(str(champ_id))
+            if path:
+                orig = QPixmap(path)
+                self._champ_pixmap = orig.scaled(36, 36, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+            
+            if not self._is_banned:
+                self._is_banned = True
+                self._vortex_particles = []
+                
+                # Create shatter fragments (positions around the icon)
+                self._shatter_fragments = []
+                for i in range(8):
+                    angle = i * 45 + random.uniform(-10, 10)
+                    self._shatter_fragments.append({
+                        'angle': angle,
+                        'dist': 0,  # Will expand then contract
+                        'size': random.uniform(3, 6)
+                    })
+                
+                self.anim_ban.stop()
+                self.anim_ban.setStartValue(0.0)
+                self.anim_ban.setEndValue(1.0)
+                self.anim_ban.start()
+                self._particle_timer.start()
+            
+            effect = HexEffect(THEME['accent_red'], 15)
+            self.setGraphicsEffect(effect)
         else:
-            self.clear()
+            self._champ_pixmap = None
+            self._anim_progress = 0.0
+            self._is_banned = False
+            self._vortex_particles = []
+            self._shatter_fragments = []
+            self._particle_timer.stop()
+            self.setGraphicsEffect(None)
+        self.update()
+    
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        w, h = self.width(), self.height()
+        cx, cy = w / 2, h / 2
+        radius = 17
+        
+        if self._champ_pixmap:
+            p = self._anim_progress
+            red = QColor(THEME['accent_red'])
+            
+            # Draw champion icon with desaturation during animation
+            painter.save()
+            path = QPainterPath()
+            path.addEllipse(QPointF(cx, cy), radius, radius)
+            painter.setClipPath(path)
+            
+            # Slight shake during phase 1
+            shake_x, shake_y = 0, 0
+            if p < 0.4:
+                shake_intensity = math.sin(p * 30) * 2 * (1 - p / 0.4)
+                shake_x = shake_intensity
+                shake_y = shake_intensity * 0.5
+            
+            painter.drawPixmap(int(cx - 18 + shake_x), int(cy - 18 + shake_y), self._champ_pixmap)
+            
+            # Desaturation/darkening overlay
+            if p < 0.7:
+                desat = int(100 * (p / 0.7))
+                painter.setBrush(QColor(0, 0, 0, desat))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawEllipse(QPointF(cx, cy), radius, radius)
+            
+            painter.restore()
+            
+            # Phase 1 (0.0 - 0.35): Vortex spiral converges
+            if p < 0.35:
+                # Draw vortex particles
+                for vp in self._vortex_particles:
+                    alpha = int(200 * vp['life'])
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(red.red(), red.green(), red.blue(), alpha))
+                    painter.drawEllipse(QPointF(vp['x'], vp['y']), vp['size'], vp['size'])
+                
+                # Growing X starts near end of vortex
+                if p > 0.2:
+                    t = (p - 0.2) / 0.15
+                    painter.setPen(QPen(red, 3))
+                    painter.drawLine(int(cx - radius * t * 0.7), int(cy - radius * t * 0.7), 
+                                   int(cx + radius * t * 0.7), int(cy + radius * t * 0.7))
+                    painter.drawLine(int(cx + radius * t * 0.7), int(cy - radius * t * 0.7),
+                                   int(cx - radius * t * 0.7), int(cy + radius * t * 0.7))
+            
+            # Phase 2 (0.35 - 0.55): Shatter - fragments burst outward
+            elif p < 0.55:
+                t = (p - 0.35) / 0.2
+                
+                # X at full size, starting to fade
+                x_alpha = int(255 * (1 - t * 0.5))
+                painter.setPen(QPen(QColor(red.red(), red.green(), red.blue(), x_alpha), 3))
+                painter.drawLine(int(cx - radius * 0.7), int(cy - radius * 0.7), 
+                               int(cx + radius * 0.7), int(cy + radius * 0.7))
+                painter.drawLine(int(cx + radius * 0.7), int(cy - radius * 0.7),
+                               int(cx - radius * 0.7), int(cy + radius * 0.7))
+                
+                # Fragments burst outward
+                for frag in self._shatter_fragments:
+                    frag_dist = 8 * t  # Expand
+                    fx = cx + math.cos(math.radians(frag['angle'])) * (radius + frag_dist)
+                    fy = cy + math.sin(math.radians(frag['angle'])) * (radius + frag_dist)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(red.red(), red.green() + 30, red.blue() + 30, int(220 * (1 - t * 0.3))))
+                    painter.drawEllipse(QPointF(fx, fy), frag['size'] * (1 - t * 0.3), frag['size'] * (1 - t * 0.3))
+            
+            # Phase 3 (0.55 - 0.8): Fragments settle back, circle forms
+            elif p < 0.8:
+                t = (p - 0.55) / 0.25
+                
+                # Fading X
+                x_alpha = int(128 * (1 - t))
+                if x_alpha > 0:
+                    painter.setPen(QPen(QColor(red.red(), red.green(), red.blue(), x_alpha), 2))
+                    painter.drawLine(int(cx - radius * 0.7), int(cy - radius * 0.7), 
+                                   int(cx + radius * 0.7), int(cy + radius * 0.7))
+                    painter.drawLine(int(cx + radius * 0.7), int(cy - radius * 0.7),
+                                   int(cx - radius * 0.7), int(cy + radius * 0.7))
+                
+                # Fragments settling
+                for frag in self._shatter_fragments:
+                    frag_dist = 8 * (1 - t)  # Contract back
+                    fx = cx + math.cos(math.radians(frag['angle'])) * (radius + frag_dist)
+                    fy = cy + math.sin(math.radians(frag['angle'])) * (radius + frag_dist)
+                    painter.setPen(Qt.PenStyle.NoPen)
+                    painter.setBrush(QColor(red.red(), red.green(), red.blue(), int(180 * (1 - t))))
+                    size = frag['size'] * (0.7 + 0.3 * (1 - t))
+                    painter.drawEllipse(QPointF(fx, fy), size, size)
+                
+                # Growing arc
+                arc_angle = int(360 * 16 * t)
+                painter.setPen(QPen(red, 2))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawArc(int(cx - radius - 1), int(cy - radius - 1), int((radius + 1) * 2), int((radius + 1) * 2), 
+                              90 * 16, -arc_angle)
+            
+            # Phase 4 (0.8 - 1.0): Final state with subtle pulse
+            else:
+                t = (p - 0.8) / 0.2
+                
+                # Full circle border with slight pulse
+                pulse = 1 + 0.1 * math.sin(t * 3.14)
+                painter.setPen(QPen(red, 2 * pulse))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(QPointF(cx, cy), radius + 1, radius + 1)
+                
+                # Small persistent X overlay
+                painter.setPen(QPen(QColor(red.red(), red.green(), red.blue(), 150), 1.5))
+                painter.drawLine(int(cx - radius * 0.5), int(cy - radius * 0.5), 
+                               int(cx + radius * 0.5), int(cy + radius * 0.5))
+                painter.drawLine(int(cx + radius * 0.5), int(cy - radius * 0.5),
+                               int(cx - radius * 0.5), int(cy + radius * 0.5))
+        else:
+            # Empty slot with subtle animation
+            painter.setPen(QPen(QColor(THEME['text_dim']), 1, Qt.PenStyle.DashLine))
+            painter.setBrush(QColor(0, 0, 0, 80))
+            painter.drawEllipse(QPointF(cx, cy), radius, radius)
 
 class DraftMirrorWidget(QWidget):
-    """
-    Main Container.
-    Layout:
-    [ Bans L ] [ TIMER ] [ Bans R ]
-    [ Slot 0 ]           [ Slot 5 ]
-    [ Slot 1 ]  CENTER   [ Slot 6 ]
-    [ Slot 2 ]  PANEL    [ Slot 7 ]
-    [ Slot 3 ]           [ Slot 8 ]
-    [ Slot 4 ]           [ Slot 9 ]
-    """
-    suggestion_clicked = pyqtSignal(str) # Propagate up
+    suggestion_clicked = pyqtSignal(str)
 
     def __init__(self, loader, engine):
         super().__init__()
         self.loader = loader
-        self.engine = engine # Need engine for settings/roles if needed
+        self.engine = engine
         
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setContentsMargins(10, 10, 10, 10)
-        self.main_layout.setSpacing(5)
+        self.main_layout.setSpacing(10)
         
-        # Background
-        self.setObjectName("DraftMirrorWidget")
-        
-        # Background
         self.setObjectName("DraftMirrorWidget")
         self.setStyleSheet("#DraftMirrorWidget { background: transparent; }")
         
         # --- Top Bar (Bans & Header) ---
         self.top_frame = QFrame()
-        self.top_frame.setFixedHeight(50)
+        self.top_frame.setFixedHeight(60)
         tf_layout = QHBoxLayout(self.top_frame)
-
-
         
-        # Left Bans
-        self.bans_l = [BanSlotWidget(loader) for _ in range(5)]
+        # Left Bans (Blue Team)
+        self.bans_l = [BanSlotWidget(loader, i) for i in range(5)]
         for b in self.bans_l: tf_layout.addWidget(b)
         
         tf_layout.addStretch()
-        tf_layout.addStretch()
         
-        # Middle Stack: Header + Phase Tracker
+        # Middle Stack
         mid_layout = QVBoxLayout()
         mid_layout.setSpacing(2)
         mid_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.header_lbl = QLabel("CHAMPION SELECT")
         self.header_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.header_lbl.setStyleSheet(f"color: {THEME['border_active']}; font-weight: bold; font-size: 14px;")
+        self.header_lbl.setStyleSheet(f"color: {THEME['border_active']}; font-weight: 800; font-size: 16px; letter-spacing: 2px;")
+        
+        # Header Glow
+        h_glow = HexEffect(THEME['border_active'], 20)
+        self.header_lbl.setGraphicsEffect(h_glow)
+        
         mid_layout.addWidget(self.header_lbl)
         
         self.phase_tracker = PhaseTrackerWidget()
         mid_layout.addWidget(self.phase_tracker)
         
+
+        
         tf_layout.addLayout(mid_layout)
+        
         tf_layout.addStretch()
         
-        # Right Bans
-        self.bans_r = [BanSlotWidget(loader) for _ in range(5)]
+        # Right Bans (Red Team)
+        self.bans_r = [BanSlotWidget(loader, i+5) for i in range(5)]
         for b in self.bans_r: tf_layout.addWidget(b)
         
         self.main_layout.addWidget(self.top_frame)
         
-        # --- Main Body (Columns) ---
+        # --- Main Body ---
         self.body_layout = QHBoxLayout()
         self.main_layout.addLayout(self.body_layout)
         
-        # Left Column (Blue/Order 0-4)
+        # Left Column
         self.left_col = QVBoxLayout()
-        self.left_col.setSpacing(2)
+        self.left_col.setSpacing(12) # Increased spacing
         self.slots_l = []
         for i in range(5):
             s = DraftSlotWidget(i, loader)
             self.slots_l.append(s)
             self.left_col.addWidget(s)
-        self.body_layout.addLayout(self.left_col, 1) # Stretch 1
+        self.body_layout.addLayout(self.left_col, 1)
         
-        # Center Panel (Suggestions/Context)
-        self.center_frame = QFrame()
-        self.center_frame.setFixedWidth(300) # Fixed width for suggestions
-        self.center_frame.setStyleSheet(f"background-color: {THEME['bg_glass']}; border-radius: 12px;")
+        # Center Panel (with animated rotating border)
+        self.center_frame = AnimatedHexFrame(active=True, color_key='border_active')
+        self.center_frame.setFixedWidth(320)
         self.center_layout = QVBoxLayout(self.center_frame)
+        self.center_layout.setContentsMargins(10, 20, 10, 20)
+        self.center_layout.setSpacing(10)
         
         self.center_header = QLabel("TITAN AI")
         self.center_header.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.center_header.setStyleSheet(f"color: {THEME['success']}; font-weight: 800; font-size: 16px;")
+        self.center_header.setStyleSheet(f"color: {THEME['success']}; font-weight: 900; font-size: 20px; letter-spacing: 3px;")
+        self.center_header.setGraphicsEffect(HexEffect(THEME['success'], 25))
         self.center_layout.addWidget(self.center_header)
 
-        from PyQt6.QtWidgets import QPushButton
         self.btn_lock = QPushButton("LOCK IN")
-        self.btn_lock.setFixedHeight(30)
+        self.btn_lock.setFixedHeight(48)
         self.btn_lock.setCursor(Qt.CursorShape.PointingHandCursor)
         self.btn_lock.setStyleSheet(f"""
             QPushButton {{
-                background-color: {THEME['border_active']};
-                color: {THEME['bg_main']};
-                border: none;
-                border-radius: 4px;
-                font-weight: bold;
-                font-family: {THEME['font_main']};
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {THEME['bg_glass']}, stop:1 rgba(20, 40, 60, 220));
+                color: {THEME['border_active']};
+                border: 2px solid {THEME['border_active']};
+                border-radius: 8px;
+                font-weight: 900;
+                font-size: 16px;
+                letter-spacing: 2px;
+                padding: 10px 20px;
             }}
             QPushButton:hover {{
-                background-color: {THEME['accent_blue']};
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {THEME['border_active']}, stop:1 {THEME['accent_blue']});
+                color: #FFFFFF;
+                border-color: {THEME['accent_blue']};
             }}
             QPushButton:pressed {{
-                background-color: {THEME['success']};
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 {THEME['success']}, stop:1 {THEME['accent_blue']});
+                border-color: {THEME['success']};
+                color: #FFFFFF;
             }}
         """)
+        self.btn_lock.setGraphicsEffect(HexEffect(THEME['border_active'], 20))
         self.btn_lock.clicked.connect(self.on_lock_click)
         self.center_layout.addWidget(self.btn_lock)
         
-        # Suggestion Cards Container
+        # Cards
         self.suggestion_cards = []
         badges = ["★ OPTIMAL", "⚔️ AGGRO", "🛡️ SAFE"]
         for b in badges:
             cw = CardWidget(loader, {"id": "0", "name":"", "wr":50.0}, b)
             cw.setVisible(False)
             cw.clicked.connect(self.on_card_click)
-            self.center_layout.addWidget(cw)
+            self.center_layout.addWidget(cw, alignment=Qt.AlignmentFlag.AlignCenter) # Center cards
             self.suggestion_cards.append(cw)
             
         self.center_layout.addStretch()
+        
+        # Add a subtle footer or deco
+
+        
         self.body_layout.addWidget(self.center_frame, 0)
         
-        # Right Column (Red/Order 5-9)
+        # Right Column
         self.right_col = QVBoxLayout()
-        self.right_col.setSpacing(2)
+        self.right_col.setSpacing(12) # Increased spacing
         self.slots_r = []
         for i in range(5, 10):
             s = DraftSlotWidget(i, loader)
@@ -279,95 +625,93 @@ class DraftMirrorWidget(QWidget):
             self.right_col.addWidget(s)
         self.body_layout.addLayout(self.right_col, 1)
 
-        # Cache Map
         self.id_cache = {}
 
     def on_card_click(self, champ_id):
         self.suggestion_clicked.emit(champ_id)
 
     def on_lock_click(self):
-        self.suggestion_clicked.emit("LOCK") # Use special code or new signal?
-        # Re-using suggestion_clicked with "LOCK" string is hacky but might work if handled upstream
-        # But wait, suggestion_clicked passes a string "champ_id". 
-        # Better to add a dedicated signal.
-
-
-
-
+        self.suggestion_clicked.emit("LOCK")
 
     def _resolve_id(self, cid):
          if not self.engine or not self.engine.ddragon: return str(cid)
          if cid in self.id_cache: return self.id_cache[cid]
-         
-         # Build Cache if empty
          if not self.id_cache:
               for k, v in self.engine.ddragon.champions.items():
-                   try:
-                       self.id_cache[int(v['key'])] = k
+                   try: self.id_cache[int(v['key'])] = k
                    except: pass
-         
          return self.id_cache.get(cid, str(cid))
 
     def update_gamestate(self, snapshot, my_cell, is_banning=False, has_action=False, phase="UNKNOWN"):
          if not snapshot: return
-
-         # Update Button State
-         if not has_action:
-              self.btn_lock.setVisible(False)
-         else:
+         
+         # Button State
+         if has_action:
               self.btn_lock.setVisible(True)
               if is_banning:
                    self.btn_lock.setText("BAN CHAMPION")
-                   # Replace Green with Red
-                   self.btn_lock.setStyleSheet(self.btn_lock.styleSheet().replace(THEME['border_active'], THEME['accent_red']))
+                   self.btn_lock.setStyleSheet(f"""
+                        QPushButton {{
+                            background-color: {THEME['bg_glass']};
+                            color: {THEME['accent_red']};
+                            border: 2px solid {THEME['accent_red']};
+                            border-radius: 4px; font-weight: 800; font-size: 14px;
+                        }}
+                        QPushButton:hover {{ background-color: {THEME['accent_red']}; color: black; }}
+                   """)
+                   self.center_header.setStyleSheet(f"color: {THEME['accent_red']}; font-weight: 900; font-size: 20px; letter-spacing: 3px;")
+                   self.center_header.setGraphicsEffect(HexEffect(THEME['accent_red'], 25))
               else:
                    self.btn_lock.setText("LOCK IN")
-                   # Replace Red with Green
-                   self.btn_lock.setStyleSheet(self.btn_lock.styleSheet().replace(THEME['accent_red'], THEME['border_active']))
-        
-         # Derive specific phase for tracker
-         tracker_phase = phase
+                   self.btn_lock.setStyleSheet(f"""
+                        QPushButton {{
+                            background-color: {THEME['bg_glass']};
+                            color: {THEME['success']};
+                            border: 2px solid {THEME['success']};
+                            border-radius: 4px; font-weight: 800; font-size: 14px;
+                        }}
+                        QPushButton:hover {{ background-color: {THEME['success']}; color: black; }}
+                   """)
+                   self.center_header.setStyleSheet(f"color: {THEME['success']}; font-weight: 900; font-size: 20px; letter-spacing: 3px;")
+                   self.center_header.setGraphicsEffect(HexEffect(THEME['success'], 25))
+         else:
+              self.btn_lock.setVisible(False)
+              self.center_header.setStyleSheet(f"color: {THEME['border_active']}; font-weight: 900; font-size: 20px; letter-spacing: 3px;")
+              self.center_header.setGraphicsEffect(HexEffect(THEME['border_active'], 25))
+
+         # Tracker
+         tracker = phase
          if phase == "BAN_PICK":
-             if is_banning: tracker_phase = "BANNING" 
-             else: tracker_phase = "PICKING"
+             tracker = "BANNING" if is_banning else "PICKING"
+         self.phase_tracker.set_phase(tracker)
          
-         if tracker_phase == "BAN_PICK":
-             picks = snapshot[0]
-             has_picks = any(p > 0 for p in picks)
-             if not has_picks: tracker_phase = "BANNING"
-             else: tracker_phase = "PICKING"
-             
-         self.phase_tracker.set_phase(tracker_phase)
-        
-
-
          picks = snapshot[0]
          bans = snapshot[1]
          
-         # Update Picks
+         # Picks
          for i, pid in enumerate(picks):
-             if i < 5: slot = self.slots_l[i]
-             else: slot = self.slots_r[i - 5]
-             
+             slot = self.slots_l[i] if i < 5 else self.slots_r[i-5]
              is_self = (i == my_cell)
              
              asset_id = 0
-             if pid > 0:
-                  asset_id = self._resolve_id(pid)
+             if pid > 0: asset_id = self._resolve_id(pid)
              
-             # Pass Asset ID (String) if > 0, else 0
-             # update_state expects champ_id. If passed string, we need to handle "if > 0" check.
-             # DraftSlotWidget: "if champ_id > 0". Strings are > 0? No, TypeError in Py3.
-             # We should change DraftSlotWidget to check validity or pass explicit ID and Name separately?
-             # Or just pass the Asset String as champ_id and change check to `if champ_id:`
+             # Highlight if active turn?
+             # Snapshot doesn't track "is_active_turn" directly for every cell, 
+             # but we can infer or pass it. For now, rely on pid==0 meaning "not picked".
+             # Actually, we need to know who is picking NOW.
+             # The engine logic knows `lane_status`. 
+             # For now, simplistic: if pid == 0 and previous are filled... hard to guess.
+             # Just set Active for SELF if has_action and pid==0.
              
-             # Let's fix loop to pass asset_id
-             slot.update_state(asset_id if pid > 0 else 0, "", False, is_self) 
+             is_picking = False
+             if i == my_cell and has_action and pid == 0: is_picking = True
              
-         # Update Bans
+             slot.update_state(asset_id, "", is_picking, is_self, is_banning)
+             
+         # Bans
          for i, bid in enumerate(bans):
              b_asset = 0
              if bid > 0: b_asset = self._resolve_id(bid)
-             
              if i < 5: self.bans_l[i].set_champ(b_asset)
              elif i < 10: self.bans_r[i-5].set_champ(b_asset)

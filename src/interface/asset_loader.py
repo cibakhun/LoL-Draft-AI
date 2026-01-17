@@ -123,3 +123,73 @@ class AssetLoader(AssetDownloader):
         # Store in Cache
         self.memory_cache[cache_key] = dest
         return dest
+
+    def hexagon_mask(self, image_path, size=64, border_color=None, border_width=2):
+        """
+        Loads an image, scales it, and masks it to a pointy-topped hexagon.
+        Returns QPixmap. Cached in memory.
+        """
+        if not image_path:
+             pixmap = QPixmap(size, size)
+             pixmap.fill(Qt.GlobalColor.transparent)
+             return pixmap
+
+        cache_key = f"{image_path}_{size}_hex_{border_color}"
+        if cache_key in self.memory_cache:
+            return self.memory_cache[cache_key]
+            
+        if not os.path.exists(image_path):
+            pixmap = QPixmap(size, size)
+            pixmap.fill(Qt.GlobalColor.transparent)
+            return pixmap
+            
+        # Load
+        src = QPixmap(image_path)
+        src = src.scaled(size, size, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
+        center_x = (src.width() - size) // 2
+        center_y = (src.height() - size) // 2
+        src = src.copy(center_x, center_y, size, size)
+        
+        # Create Output
+        dest = QPixmap(size, size)
+        dest.fill(Qt.GlobalColor.transparent)
+        
+        painter = QPainter(dest)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        # Create Hexagon Polygon (Pointy-topped)
+        import math
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtGui import QPolygonF, QPainterPath, QPen, QColor
+        
+        points = []
+        r = size / 2 - border_width # Padding
+        cx, cy = size/2, size/2
+        
+        for i in range(6):
+            angle_deg = 60 * i - 30 
+            angle_rad = math.radians(angle_deg)
+            x = cx + r * math.cos(angle_rad)
+            y = cy + r * math.sin(angle_rad)
+            points.append(QPointF(x, y))
+            
+        poly = QPolygonF(points)
+        
+        # Draw Image Masked
+        path = QPainterPath()
+        path.addPolygon(poly)
+        painter.setClipPath(path)
+        painter.drawPixmap(0, 0, src)
+        
+        # Draw Border
+        if border_color:
+             painter.setClipping(False) 
+             pen = QPen(QColor(border_color), border_width)
+             painter.setPen(pen)
+             painter.setBrush(Qt.BrushStyle.NoBrush)
+             painter.drawPolygon(poly)
+             
+        painter.end()
+        
+        self.memory_cache[cache_key] = dest
+        return dest

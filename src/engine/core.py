@@ -246,47 +246,48 @@ class TitanEngine:
         """
         if not self.lcu.connected: return False
         
-        session = self.lcu.get_champ_select()
-        if not session: return False
+        # Resolve Real ID
+        real_id = 0
+        if str(champion_id).isdigit():
+             real_id = int(champion_id)
+        else:
+             for c_key, c_val in self.ddragon.champions.items():
+                  if c_key == champion_id:
+                        real_id = int(c_val['key'])
+                        break
+        if real_id == 0: return False
+
+        phase = self.lcu.get_gameflow_phase()
         
-        # Find active action
-        local_cell = session.get('localPlayerCellId', -1)
-        actions = session.get('actions', [])
-        
-        target_action_id = -1
-        
-        for turn in actions:
-            for action in turn:
-                if action.get('actorCellId') == local_cell and action.get('isInProgress', False):
-                     # Found active action
-                     target_action_id = action.get('id')
-                     break
-            if target_action_id != -1: break
+        # PLANNING PHASE (Intent)
+        if phase == 'ChampSelect':
+            # Check specifically for Planning sub-phase via timer or just try intent if no actions
+            session = self.lcu.get_champ_select()
+            if not session: return False
             
-        if target_action_id != -1:
-             try:
-                 # Ensure proper ID Mapping.
+            timer = session.get('timer', {})
+            phase_internal = timer.get('phase', '')
+            
+            if phase_internal == 'PLANNING':
+                 print(f"[TITAN] Declaring Intent: {real_id}")
+                 return self.lcu.declare_intent(real_id)
+            
+            # Normal Action Loop
+            local_cell = session.get('localPlayerCellId', -1)
+            actions = session.get('actions', [])
+            target_action_id = -1
+            
+            for turn in actions:
+                for action in turn:
+                    if action.get('actorCellId') == local_cell and action.get('isInProgress', False):
+                         target_action_id = action.get('id')
+                         break
+                if target_action_id != -1: break
+            
+            if target_action_id != -1:
+                 print(f"[TITAN] Hovering Champion {real_id} on Action {target_action_id}")
+                 return self.lcu.hover_champion(target_action_id, real_id)
                  
-                 real_id = 0
-                 # Try direct int conversion (if it's "266")
-                 if str(champion_id).isdigit():
-                      real_id = int(champion_id)
-                 else:
-                      # It's an Asset Name (e.g. "Aatrox")
-                      for c_key, c_val in self.ddragon.champions.items():
-                           if c_key == champion_id:
-                                real_id = int(c_val['key'])
-                                break
-                                
-                 if real_id > 0:
-                     res = self.lcu.hover_champion(target_action_id, real_id)
-                     if res: print(f"[TITAN] Hovered Champion {real_id} on Action {target_action_id}")
-                     else: print(f"[TITAN] Hover Failed for {real_id}")
-                     return res
-             except Exception as e:
-                 print(f"Action Error: {e}")
-                 traceback.print_exc()
-                  
         return False
 
     def lock_in(self, champion_id=None): # Added champion_id parameter
@@ -307,63 +308,96 @@ class TitanEngine:
         actions = session.get('actions', [])
         
         target_action_id = -1
-        
-        print(f"[TITAN] Lock In Request - Cell: {local_cell}")
-        
-        print(f"[TITAN] Lock In Request - Cell: {local_cell}")
-        
         found_action = None
         
+        print(f"[TITAN] Lock In Request - Cell: {local_cell}")
+        
+        # Debug: List ALL actions for this turn/local player
+        potential_actions = []
         for turn in actions:
             for action in turn:
-                print(f"[DEBUG] Action: ID={action.get('id')} Type={action.get('type')} Actor={action.get('actorCellId')} Prog={action.get('isInProgress')}")
-                
                 if action.get('actorCellId') == local_cell and action.get('isInProgress', False):
-                     found_action = action
-                     # We don't break immediately in debug loop so we can see all, 
-                     # but for logic we should pick the first valid one? 
-                     # Prefer 'pick' or 'ban' over others?
-                     if action.get('type') in ['pick', 'ban']:
-                          target_action_id = action.get('id')
-                          break
-            if target_action_id != -1: break
-            
-        if target_action_id == -1 and found_action:
-             # Fallback if we found one but didn't break for type check (e.g. if type was weird)
+                     print(f"[DEBUG] Active Action Found: ID={action.get('id')} Type={action.get('type')} CID={action.get('championId')}")
+                     potential_actions.append(action)
+                     
+        # Priority Selection: BAN > PICK > Other
+        for action in potential_actions:
+             if action.get('type') == 'ban':
+                  found_action = action
+                  target_action_id = action.get('id')
+                  break
+        
+        if target_action_id == -1:
+             for action in potential_actions:
+                  if action.get('type') == 'pick':
+                       found_action = action
+                       target_action_id = action.get('id')
+                       break
+                       
+        # Fallback to any active action if no specific type match
+        if target_action_id == -1 and potential_actions:
+             found_action = potential_actions[0]
              target_action_id = found_action.get('id')
             
         if target_action_id != -1 and found_action:
-             print(f"[TITAN] Completing Action ID: {target_action_id}")
+             print(f"[TITAN] Target Action ID: {target_action_id} Type: {found_action.get('type')}")
              
-             # Extract Champion ID from Action (Hover state)
-             # Bans require championId to be sent with complete, or at least hovered.
-             cid = found_action.get('championId', 0)
-             
-             # If Action doesn't have it (maybe lag), check myTeam?
-             # But for bans, 'myTeam' isn't reliable. 
-             # Only check myTeam if cid is 0 and it's a PICK action.
+             # Determine Content ID (CID)
+             # Priority 1: Explicit Argument from UI (e.g. user clicked card then clicked lock)
+             # Priority 1: Explicit Argument from UI (e.g. user clicked card then clicked lock)
+             cid = 0
+             if champion_id:
+                  if str(champion_id).isdigit():
+                       cid = int(champion_id)
+                  else:
+                       # Attempt to resolve name to ID
+                       for c_key, c_val in self.ddragon.champions.items():
+                            if c_key == champion_id:
+                                  cid = int(c_val['key'])
+                                  break
+                  print(f"[TITAN] Using Explicit Champion ID: {cid} (from {champion_id})")
+
+             # Priority 2: Action's existing selection (e.g. user clicked lock without card, but hovered in client)
+             if cid == 0:
+                 cid = found_action.get('championId', 0)
+                 if cid > 0: print(f"[TITAN] Using Action's Champion ID: {cid}")
+
+             # Priority 3: MyTeam Selection (only for picks, if action not updated yet)
              if cid == 0 and found_action.get('type') == 'pick':
                  my_selection = next((p for p in session.get('myTeam', []) if p.get('cellId') == local_cell), None)
-                 if my_selection: cid = my_selection.get('championId', 0)
+                 if my_selection: 
+                     cid = my_selection.get('championId', 0)
+                     if cid > 0: print(f"[TITAN] Using MyTeam Champion ID ({cid})")
+                 else:
+                     print(f"[TITAN] No MyTeam entry found for cell {local_cell}")
                  
-             print(f"[TITAN] Action {target_action_id} has Champion ID: {cid}")
+             print(f"[TITAN] Final Lock ID: {cid}")
              
-             data = None
-             if cid > 0:
-                 data = {"championId": cid}
-                 
-             # Try completion WITH data immediately (Best Practice)
+             if cid == 0:
+                  print("[TITAN] ERROR: Champion ID is 0. Cannot Lock In.")
+                  return False
+
+             # Force Hover First (Double Tap to be safe)
+             self.lcu.hover_champion(target_action_id, cid)
+             time.sleep(0.25)
+                  
+             # Payload: Ensure we send EVERYTHING potentially needed
+             data = {"championId": cid, "completed": True}
+                  
+             # Try completion
+             print(f"[TITAN] Sending Lock Request for Action {target_action_id} with {data}")
              res = self.lcu.complete_action(target_action_id, data=data)
              
-             if not res:
-                  print("[TITAN] Complete Action failed (POST/PATCH).")
-                  # No further fallback needed as complete_action already does 2 methods.
+             if res:
+                  print(f"[TITAN] Lock In SUCCESS for Action {target_action_id}")
+             else:
+                  print(f"[TITAN] Lock In FAILED. LCU returned False. Check LCU logs.")
+
              return res
              
-        print("[TITAN] No active action found to lock in.")
-        return False
-             
-        print("[TITAN] No active action found to lock in.")
+        print(f"[TITAN] No active action found to lock in. Potential actions found: {len(potential_actions)}")
+        for pa in potential_actions:
+             print(f" - ID:{pa.get('id')} Type:{pa.get('type')} InProg:{pa.get('isInProgress')} Actor:{pa.get('actorCellId')}")
         return False
 
 

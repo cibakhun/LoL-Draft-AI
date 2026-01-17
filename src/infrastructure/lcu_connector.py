@@ -139,34 +139,56 @@ class TitanLCU:
         elif r:
             print(f"[LCU Error] Hover Failed: {r.status_code} - {r.text}")
         return False
+
+    def declare_intent(self, champion_id):
+        """
+        Declares champion intent during Planning phase.
+        Endpoint: PATCH /lol-champ-select/v1/session/my-selection
+        """
+        endpoint = '/lol-champ-select/v1/session/my-selection'
+        data = {"championId": int(champion_id)}
+        r = self.request('PATCH', endpoint, data=data)
+        if r and r.status_code in [200, 204]:
+            return True
+        return False
         
     def complete_action(self, action_id, data=None):
         """Locks in the selection."""
-        # Method 1: POST /complete
-        endpoint = f'/lol-champ-select/v1/session/actions/{action_id}/complete'
-        r = self.request('POST', endpoint, data=data) 
+        # ACTION COMPLETION STRATEGY: "THE HAMMER"
+        # We try both POST /complete and PATCH /action to ensure reliability.
         
-        status = r.status_code if r else "None"
-        # print(f"[LCU Debug] Method 1 (POST complete) for {action_id}: {status}")
+        # 1. POST /complete (Standard)
+        # Re-adding championId to body. Some actions (like bans) might require explicit confirmation of the ID.
+        endpoint_complete = f'/lol-champ-select/v1/session/actions/{action_id}/complete'
+        
+        post_data = {}
+        if data and 'championId' in data:
+            post_data["championId"] = data['championId']
+            
+        print(f"[LCU Debug] Method 1 sending: {post_data}")   
+        r1 = self.request('POST', endpoint_complete, data=post_data) 
+        
+        status1 = r1.status_code if r1 else "None"
+        print(f"[LCU Debug] Method 1 (POST complete) for {action_id}: {status1}")
 
-        if r and r.status_code in [200, 204]:
-            return True
-            
-        # Method 2: PATCH completed=True
-        print(f"[LCU Debug] POST failed ({status}). Trying PATCH {{'completed': True}}...")
+        # 2. PATCH (Backup/Redundant)
+        # Even if POST says OK, sometimes it doesn't "stick" for bans.
+        # Ensure we send championId AND completed=True together for atomic lock.
         endpoint_patch = f'/lol-champ-select/v1/session/actions/{action_id}'
-        # Merge data if exists, otherwise just completed
-        patch_data = data.copy() if data else {}
-        patch_data['completed'] = True
         
-        r2 = self.request('PATCH', endpoint_patch, data=patch_data)
+        patch_payload = data if data else {"completed": True}
+        # Ensure 'completed' is asserted
+        if not patch_payload.get('completed'): patch_payload['completed'] = True
+        
+        print(f"[LCU Debug] Method 2 sending: {patch_payload}")
+        r2 = self.request('PATCH', endpoint_patch, data=patch_payload)
         status2 = r2.status_code if r2 else "None"
+        print(f"[LCU Debug] Method 2 (PATCH completed=True) for {action_id}: {status2}")
         
-        if r2 and r2.status_code in [200, 204]:
-            print(f"[LCU Debug] PATCH success.")
-            return True
-            
-        print(f"[LCU Error] Both Lock In methods failed. POST:{status} PATCH:{status2} Response:{r2.text if r2 else 'NoResp'}")
+        # Success if AT LEAST ONE worked
+        if (r1 and r1.status_code in [200, 204]) or (r2 and r2.status_code in [200, 204]):
+             return True
+             
         return False
 
     def get_champion_mastery(self, puuid):
