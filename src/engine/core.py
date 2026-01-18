@@ -407,7 +407,7 @@ class TitanEngine:
         return self.lcu.get_gameflow_phase()
 
     def get_profile_data(self):
-        """Fetches current summoner profile and rank from LCU."""
+        """Fetches current summoner profile, rank, and top mastery."""
         if not self.lcu.connected: 
             return None
             
@@ -421,20 +421,170 @@ class TitanEngine:
             "level": summ.get('summonerLevel', 0),
             "puuid": summ.get('puuid', ''),
             "rank_solo": "Unranked",
-            "tier_solo": ""
+            "tier_solo": "",
+            "top_mastery": []
         }
         
         # Get Rank
         if data['puuid']:
             ranked = self.lcu.get_ranked_stats(data['puuid'])
             if ranked and 'queues' in ranked:
-                # Find Solo Queue (420)
                 for q in ranked['queues']:
                     if q.get('queueType') == 'RANKED_SOLO_5x5':
                         data['tier_solo'] = q.get('tier', '')
                         data['rank_solo'] = f"{q.get('tier')} {q.get('rank')} ({q.get('leaguePoints')} LP)"
                         break
+                        
+            # Fallback: Current Ranked Stats (If standard failed or returned empty)
+            if not data['tier_solo']:
+                 print("[TITAN] Standard Ranked Stats empty. Trying /current-ranked-stats...")
+                 r_curr = self.lcu.request('GET', '/lol-ranked/v1/current-ranked-stats')
+                 if r_curr and r_curr.status_code == 200:
+                      c_stats = r_curr.json()
+                      
+                      # Strategy: First look for Solo, then Flex, then anything else
+                      queues = c_stats.get('queues', [])
+                      found_q = None
+                      
+                      # 1. Try Solo Code
+                      for q in queues:
+                           if q.get('queueType') == 'RANKED_SOLO_5x5' and q.get('tier'):
+                                found_q = q
+                                break
+                                
+                      # 2. Try Flex if Solo empty
+                      if not found_q:
+                           for q in queues:
+                                if q.get('queueType') == 'RANKED_FLEX_SR' and q.get('tier'):
+                                     found_q = q
+                                     break
+                      
+                      # 3. Try Anything (Highest Tier)
+                      if not found_q:
+                           # Sort by tier weight? For now just pick first valid
+                           for q in queues:
+                                if q.get('tier'):
+                                     found_q = q
+                                     break
+                                     
+                      if found_q:
+                           t = found_q.get('tier', 'UNRANKED')
+                           d = found_q.get('division', '')
+                           lp = found_q.get('leaguePoints', 0)
+                           qt = found_q.get('queueType', 'RANKED')
+                           
+                           data['tier_solo'] = t
+                           queue_name = "SOLO/DUO"
+                           if "FLEX" in qt: queue_name = "FLEX"
+                           elif "TFT" in qt: queue_name = "TFT"
+                           elif "ARENA" in qt: queue_name = "ARENA"
+                           
+                           data['rank_solo'] = f"{t} {d} ({lp} LP)"
+                           # We might want to pass queue name too, but UI expects rank string.
+                           # We can append it cleanly: "GOLD II (54 LP) - TFT"
+                           if queue_name != "SOLO/DUO":
+                                data['rank_solo'] += f" [{queue_name}]"
+                                
+                           print(f"[TITAN] Found Best Rank: {data['rank_solo']}")
+            
+            # Get Top Mastery
+            mastery_list = self.lcu.get_champion_mastery(data['puuid'])
+            if mastery_list:
+                # Top 3
+                for m in mastery_list[:3]:
+                    cid = m.get('championId')
+                    cname = self.id_map.get(cid, "Unknown")
+                    points = m.get('championPoints', 0)
+                    
+                    # Format points (e.g. 1.2M, 800K)
+                    if points > 1_000_000: p_str = f"{points/1_000_000:.1f}M"
+                    elif points > 1_000: p_str = f"{points/1_000:.0f}K"
+                    else: p_str = str(points)
+                    
+                    data['top_mastery'].append({
+                        "id": cid,
+                        "name": cname,
+                        "points": p_str,
+                        "level": m.get('championLevel', 0)
+                    })
         return data
+
+    def get_match_history_data(self):
+        """
+        Fetches processed match history and analytics.
+        Returns:
+            {
+                "matches": [ {champ_id, result, kda, date, mode}, ... ],
+                "analytics": { "winrate": 55, "trend": "Heating Up" }
+            }
+        """
+        if not self.lcu.connected: return None
+        
+        summ = self.lcu.get_current_summoner()
+        if not summ: return None
+        puuid = summ.get('puuid')
+        if not puuid: return None
+        
+        raw = self.lcu.get_match_history(puuid)
+        if not raw or 'games' not in raw: return None
+        
+        games = raw.get('games', {}).get('games', [])
+        processed_matches = []
+        wins = 0
+        total = 0
+        
+        for game in games:
+            # Participants info is separate or embedded? 
+            # In LCU /match-history/v1/games/{id} gives full details. 
+            # But the list endpoint typically gives summary for the player.
+            # LCU Matchlist endpoint structure: 
+            # game = { gameId, participantId, participants: [...], ... }
+            # Usually 'participants' has stats.
+            
+            p_stats = game.get('participants', [{}])[0].get('stats', {})
+            p_ident = game.get('participantIdentities', [{}])[0].get('player', {})
+            
+            # Extract
+            champ_id = game.get('participants', [{}])[0].get('championId', 0)
+            is_win = p_stats.get('win', False)
+            kills = p_stats.get('kills', 0)
+            deaths = p_stats.get('deaths', 0)
+            assists = p_stats.get('assists', 0)
+            
+            mode = game.get('gameMode', 'CLASSIC')
+            ts = game.get('gameCreation', 0)
+            
+            processed_matches.append({
+                "champion_id": champ_id,
+                "win": is_win,
+                "kda": f"{kills}/{deaths}/{assists}",
+                "timestamp": ts,
+                "mode": mode
+            })
+            
+            if total < 20: # Analytics on first 20
+                if is_win: wins += 1
+                total += 1
+                
+        # Analytics
+        wr = 0
+        if total > 0: wr = int((wins / total) * 100)
+        
+        trend = "Stable"
+        if total >= 5:
+            # Check last 5
+            recent_wins = sum(1 for m in processed_matches[:5] if m['win'])
+            if recent_wins >= 4: trend = "ON FIRE 🔥"
+            elif recent_wins <= 1: trend = "Cold Streak ❄️"
+            
+        return {
+            "matches": processed_matches,
+            "analytics": {
+                "winrate": wr,
+                "total_games": total,
+                "trend": trend
+            }
+        }
 
     # --- HELPERS ---
     def _detect_player_role(self, session):

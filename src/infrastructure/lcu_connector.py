@@ -199,6 +199,17 @@ class TitanLCU:
             return r.json()
         return []
 
+    def get_match_history(self, puuid, begIndex=0, endIndex=20):
+        """
+        Fetches match history for the given puuid.
+        """
+        # Endpoint: /lol-match-history/v1/products/lol/{puuid}/matches?begIndex={}&endIndex={}
+        endpoint = f'/lol-match-history/v1/products/lol/{puuid}/matches?begIndex={begIndex}&endIndex={endIndex}'
+        r = self.request('GET', endpoint)
+        if r and r.status_code == 200:
+            return r.json()
+        return None
+
 
 if __name__ == "__main__":
     print("--- Titan LCU Connector ---")

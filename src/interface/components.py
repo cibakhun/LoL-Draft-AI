@@ -19,6 +19,7 @@ THEME = {
     "success": "#0AC8B9",
     "font_main": "Segoe UI",
     "font_data": "Consolas",
+    "text_data": "#8CA6C8",
 }
 
 class HexEffect(QGraphicsDropShadowEffect):
@@ -323,7 +324,6 @@ class CardWidget(HexFrame):
         self._intro_progress = 0.0
         self._shimmer_offset = -0.5  # Shimmer light position
         self._shimmer_hue = 0.0  # For rainbow effect
-        self._particles = []  # List of particle dicts
         
         # NEW: Levitation/Float Effect
         self._float_phase = 0.0
@@ -368,75 +368,19 @@ class CardWidget(HexFrame):
         # Shimmer sweep with rainbow hue rotation
         if self._hover_progress > 0.1:
             self._shimmer_offset += 0.025
-            self._shimmer_hue += 3.0  # Rotate hue for rainbow
+            self._shimmer_hue += 3.0
             if self._shimmer_hue >= 360:
                 self._shimmer_hue = 0
             if self._shimmer_offset > 1.5:
                 self._shimmer_offset = -0.5
         
-        # Floating levitation effect
-        if self._hover_progress > 0.3:
-            self._float_phase += 0.08 * self._wr_pulse_speed
-            self._float_offset = 3 * math.sin(self._float_phase) * self._hover_progress
-        else:
-            self._float_offset *= 0.9  # Ease back down
-        
         # Badge slide-in animation
         if self._badge_progress < 1.0:
             self._badge_progress += 0.05
         
-        # Particle physics
-        new_particles = []
-        for p in self._particles:
-            p['life'] -= 0.015 * self._wr_pulse_speed
-            p['x'] += p['vx']
-            p['y'] += p['vy']
-            p['vy'] += 0.015  # Lighter gravity
-            
-            # Trail effect - store history
-            if 'trail' not in p:
-                p['trail'] = []
-            p['trail'].append((p['x'], p['y']))
-            if len(p['trail']) > 5:
-                p['trail'].pop(0)
-                
-            if p['life'] > 0:
-                new_particles.append(p)
-        self._particles = new_particles
-        
-        # Spawn particles - burst on hover start, then continuous
-        if self._hover_progress > 0.5 and len(self._particles) < 20:
-            spawn_chance = 0.4 if len(self._particles) < 5 else 0.15
-            if random.random() < spawn_chance:
-                self._spawn_particle()
-        
         self.update()
     
-    def _spawn_particle(self, burst=False):
-        """Create a new sparkle particle near the icon."""
-        cx, cy = self.width() / 2, 80
-        
-        # Star-shaped particles have rotation
-        angle = random.uniform(0, 360)
-        speed = random.uniform(0.3, 1.2) if burst else random.uniform(0.3, 0.8)
-        
-        self._particles.append({
-            'x': cx + random.uniform(-35, 35),
-            'y': cy + random.uniform(-35, 35),
-            'vx': math.cos(math.radians(angle)) * speed,
-            'vy': math.sin(math.radians(angle)) * speed - 0.8,
-            'life': 1.0,
-            'size': random.uniform(2.5, 6),
-            'rotation': angle,
-            'is_star': random.random() < 0.4,  # 40% are star-shaped
-            'hue': random.uniform(160, 200),  # Teal to cyan range
-            'trail': []
-        })
-    
-    def spawn_particle_burst(self, count=8):
-        """Spawn a burst of particles for dramatic effect."""
-        for _ in range(count):
-            self._spawn_particle(burst=True)
+
 
     @pyqtProperty(float)
     def intro_progress(self):
@@ -471,9 +415,6 @@ class CardWidget(HexFrame):
         self.anim_hover.setEndValue(1.0)
         self.anim_hover.start()
         self._effect_timer.start()  # Start shimmer/particle timer
-        
-        # Spawn burst of particles on hover start
-        self.spawn_particle_burst(6)
         
         super().enterEvent(event)
 
@@ -551,10 +492,6 @@ class CardWidget(HexFrame):
             slide_off = 15 * (1.0 - self._intro_progress)
             painter.translate(0, slide_off)
         
-        # --- 0.5 Float/Levitation Effect ---
-        if abs(self._float_offset) > 0.1:
-            painter.translate(0, -self._float_offset)
-        
         # --- 1. Apply Click Scale Transform ---
         painter.translate(w/2, h/2)
         painter.scale(self._click_scale, self._click_scale)
@@ -620,17 +557,15 @@ class CardWidget(HexFrame):
             
             cx, cy = w/2, 70
             
-            # --- ANIMATION: LIFT & SCALE ---
+            # --- ANIMATION: SCALE ---
             progress = self._hover_progress
-            # Smooth ease-out for scale: 1.0 -> 1.15
-            scale_factor = 1.0 + (0.15 * progress)
-            # Lift up: 0 -> -10 pixels
-            lift_y = -10 * progress
+            # Smooth ease-out for scale: 1.0 -> 1.05 (Subtle)
+            scale_factor = 1.0 + (0.05 * progress)
             
             # --- A. HOLY HALO (Backglow) ---
             if progress > 0.01:
                 halo_r = 70 * scale_factor
-                halo_grad = QRadialGradient(cx, cy + lift_y, halo_r)
+                halo_grad = QRadialGradient(cx, cy, halo_r)
                 halo_grad.setColorAt(0.5, QColor(255, 255, 255, 0))
                 halo_grad.setColorAt(0.8, QColor(255, 220, 100, int(150 * progress))) # Gold/White Halo
                 halo_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
@@ -648,10 +583,10 @@ class CardWidget(HexFrame):
             painter.setOpacity(1.0)
             icon_s = 85 * scale_factor
             
-            # Draw lifting icon
+            # Draw icon
             painter.drawPixmap(
                 int(cx - icon_s/2), 
-                int(cy - icon_s/2 + lift_y), 
+                int(cy - icon_s/2), 
                 int(icon_s), 
                 int(icon_s), 
                 self._icon_pixmap
@@ -659,7 +594,7 @@ class CardWidget(HexFrame):
             
             # --- D. INNER SHADOW (Vignette) ---
             painter.setBrush(Qt.BrushStyle.NoBrush)
-            grad_vig = QRadialGradient(cx, cy + lift_y, icon_s * 0.9)
+            grad_vig = QRadialGradient(cx, cy, icon_s * 0.9)
             grad_vig.setColorAt(0.8, QColor(0,0,0,0))
             grad_vig.setColorAt(1.0, QColor(5, 10, 20, 150))
             painter.setBrush(QBrush(grad_vig))
@@ -690,32 +625,33 @@ class CardWidget(HexFrame):
         # Text also lifts slightly on hover? No, keep text stable for readability
         painter.drawText(QRectF(0, 135, w, 25), Qt.AlignmentFlag.AlignCenter, name)
         
-        # Winrate Pill
-        wr = self.data.get('wr', 50.0)
-        wr_rect = QRectF(w/2 - 25, 165, 50, 18)
+        # Winrate / Subtitle Pill
+        subtitle = self.data.get('subtitle')
+        if not subtitle:
+            # Fallback to WR logic
+            wr = self.data.get('wr', 50.0)
+            subtitle = f"{wr:.1f}%"
+            
+        wr_rect = QRectF(w/2 - 30, 165, 60, 18)
         painter.setBrush(QColor(20, 30, 50))
         painter.setPen(QPen(QColor(THEME['border_norm']), 1))
         painter.drawRoundedRect(wr_rect, 4, 4)
         
-        delta = self.data.get('delta', 0.0)
-        c_wr = QColor(THEME['success']) if delta >= 0 else QColor(THEME['accent_red'])
+        c_text = QColor(THEME['success'])
+        # If it looks like a winrate, color it
+        if "%" in subtitle:
+            try:
+                 val = float(subtitle.strip('%'))
+                 if val < 49: c_text = QColor(THEME['accent_red'])
+            except: pass
+        else:
+            c_text = QColor(THEME['border_active']) # Gold for text
         
         painter.setFont(QFont(THEME['font_data'], 9, QFont.Weight.Bold))
-        painter.setPen(c_wr)
-        painter.drawText(wr_rect, Qt.AlignmentFlag.AlignCenter, f"{wr:.1f}%")
+        painter.setPen(c_text)
+        painter.drawText(wr_rect, Qt.AlignmentFlag.AlignCenter, subtitle)
         
-        # --- 6. PARTICLES (Rising Motes Only) ---
-        # Filter particles to only show simple ones, remove complex trails 
-        for p in self._particles:
-            alpha = int(200 * p['life'] * self._hover_progress)
-            if alpha > 0:
-                # Gold/White sparkles
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.setBrush(QColor(255, 230, 150, alpha))
-                
-                # Apply lift effect to particles too
-                py = p['y'] - (20 * self._hover_progress)
-                painter.drawEllipse(QPointF(p['x'], py), p['size'], p['size'])
+
         
         # --- 7. BORDER (Polished Gold Transition) ---
         # Base Bronze 
