@@ -71,7 +71,6 @@ class DraftSlotWidget(HexFrame):
         
         # Pulsing glow animation
         self._glow_phase = 0.0
-        self._spotlight_particles = []  # Particles for active turn spotlight
         self._glow_timer = QTimer(self)
         self._glow_timer.timeout.connect(self._tick_glow)
         self._glow_timer.setInterval(25)  # 40 FPS for smoother breathing
@@ -134,7 +133,7 @@ class DraftSlotWidget(HexFrame):
         super().leaveEvent(event)
     
     def _tick_glow(self):
-        """Breathing glow with spotlight particles."""
+        """Breathing glow without particles."""
         self._glow_phase += 0.08
         intensity = 0.5 + 0.5 * math.sin(self._glow_phase)
         self.glow.setBlurRadius(18 + 18 * intensity)
@@ -145,27 +144,6 @@ class DraftSlotWidget(HexFrame):
         g = int(base_color.green() + (bright_color.green() - base_color.green()) * intensity)
         b = int(base_color.blue() + (bright_color.blue() - base_color.blue()) * intensity)
         self.glow.setColor(QColor(r, g, b))
-        
-        # Spawn spotlight particles when active
-        if self._is_active_turn and len(self._spotlight_particles) < 12:
-            if math.sin(self._glow_phase * 2) > 0.7:  # Periodic spawning
-                import random
-                self._spotlight_particles.append({
-                    'x': random.uniform(5, self.width() - 5),
-                    'y': self.height(),
-                    'vy': random.uniform(-1.5, -0.8),
-                    'size': random.uniform(1.5, 3),
-                    'life': 1.0
-                })
-        
-        # Update particles
-        new_particles = []
-        for p in self._spotlight_particles:
-            p['y'] += p['vy']
-            p['life'] -= 0.02
-            if p['life'] > 0 and p['y'] > 0:
-                new_particles.append(p)
-        self._spotlight_particles = new_particles
         
         self.update()
     
@@ -190,12 +168,6 @@ class DraftSlotWidget(HexFrame):
             painter.setBrush(QBrush(spotlight_grad))
             painter.drawRoundedRect(self.rect(), 6, 6)
             
-            # Draw spotlight particles
-            for p in self._spotlight_particles:
-                alpha = int(180 * p['life'])
-                painter.setBrush(QColor(10, 220, 200, alpha))
-                painter.drawEllipse(QPointF(p['x'], p['y']), p['size'], p['size'])
-            
             # "YOUR TURN" text (right side)
             text_alpha = int(200 + 55 * intensity)
             painter.setPen(QColor(THEME['accent_blue'].replace('#', ''), text_alpha))
@@ -216,7 +188,6 @@ class DraftSlotWidget(HexFrame):
             self._glow_timer.start()
         else:
             self._glow_timer.stop()
-            self._spotlight_particles = []  # Clear particles when not active
         
         # Update colors based on activity
         if is_active:
@@ -257,18 +228,16 @@ class BanSlotWidget(QWidget):
         self._champ_pixmap = None
         self._anim_progress = 0.0
         self._is_banned = False
-        self._vortex_particles = []  # Particle system for vortex
-        self._shatter_fragments = []  # Fragment positions for shatter
         
-        # Animation (0→1 over 1000ms for more drama)
+        # Animation (0->1)
         self.anim_ban = QPropertyAnimation(self, b"anim_progress")
-        self.anim_ban.setDuration(1000)
-        self.anim_ban.setEasingCurve(QEasingCurve.Type.OutCubic)
+        self.anim_ban.setDuration(600) # Faster, snappier
+        self.anim_ban.setEasingCurve(QEasingCurve.Type.OutBack)
         
-        # Continuous update timer for particles
-        self._particle_timer = QTimer(self)
-        self._particle_timer.timeout.connect(self._tick_particles)
-        self._particle_timer.setInterval(25)
+        # Continuous update timer for glow pulse (optional, reuse or simple)
+        self._glow_timer = QTimer(self)
+        self._glow_timer.timeout.connect(self.update)
+        self._glow_timer.setInterval(40)
     
     @pyqtProperty(float)
     def anim_progress(self):
@@ -279,45 +248,9 @@ class BanSlotWidget(QWidget):
         self._anim_progress = val
         self.update()
     
-    def _tick_particles(self):
-        """Update vortex particles."""
-        import random
-        cx, cy = self.width() / 2, self.height() / 2
-        
-        # Update vortex particles
-        new_vortex = []
-        for p in self._vortex_particles:
-            # Spiral inward
-            dx = cx - p['x']
-            dy = cy - p['y']
-            dist = math.sqrt(dx*dx + dy*dy)
-            if dist > 3:
-                p['x'] += dx * 0.08 + p['vx']
-                p['y'] += dy * 0.08 + p['vy']
-                # Add rotation
-                p['vx'] = -dy * 0.05
-                p['vy'] = dx * 0.05
-                p['life'] -= 0.03
-                if p['life'] > 0:
-                    new_vortex.append(p)
-        self._vortex_particles = new_vortex
-        
-        # Spawn new vortex particles during phase 1
-        if self._anim_progress < 0.4 and len(self._vortex_particles) < 20:
-            angle = random.uniform(0, 360)
-            radius = 25 + random.uniform(0, 10)
-            self._vortex_particles.append({
-                'x': cx + math.cos(math.radians(angle)) * radius,
-                'y': cy + math.sin(math.radians(angle)) * radius,
-                'vx': 0, 'vy': 0,
-                'size': random.uniform(1.5, 3),
-                'life': 1.0
-            })
-        
-        self.update()
+
         
     def set_champ(self, champ_id):
-        import random
         if champ_id:
             path = self.loader.get_champ_icon_path(str(champ_id))
             if path:
@@ -326,23 +259,11 @@ class BanSlotWidget(QWidget):
             
             if not self._is_banned:
                 self._is_banned = True
-                self._vortex_particles = []
-                
-                # Create shatter fragments (positions around the icon)
-                self._shatter_fragments = []
-                for i in range(8):
-                    angle = i * 45 + random.uniform(-10, 10)
-                    self._shatter_fragments.append({
-                        'angle': angle,
-                        'dist': 0,  # Will expand then contract
-                        'size': random.uniform(3, 6)
-                    })
-                
                 self.anim_ban.stop()
                 self.anim_ban.setStartValue(0.0)
                 self.anim_ban.setEndValue(1.0)
                 self.anim_ban.start()
-                self._particle_timer.start()
+                self._glow_timer.start()
             
             effect = HexEffect(THEME['accent_red'], 15)
             self.setGraphicsEffect(effect)
@@ -350,9 +271,7 @@ class BanSlotWidget(QWidget):
             self._champ_pixmap = None
             self._anim_progress = 0.0
             self._is_banned = False
-            self._vortex_particles = []
-            self._shatter_fragments = []
-            self._particle_timer.stop()
+            self._glow_timer.stop()
             self.setGraphicsEffect(None)
         self.update()
     
@@ -364,124 +283,72 @@ class BanSlotWidget(QWidget):
         cx, cy = w / 2, h / 2
         radius = 17
         
-        if self._champ_pixmap:
-            p = self._anim_progress
-            red = QColor(THEME['accent_red'])
+        # 1. Background Placeholder if empty
+        if not self._champ_pixmap:
+             painter.setPen(QPen(QColor(THEME['text_dim']), 1, Qt.PenStyle.DashLine))
+             painter.setBrush(QColor(0, 0, 0, 80))
+             painter.drawEllipse(QPointF(cx, cy), radius, radius)
+             return
+
+        # 2. Champion Icon
+        p = self._anim_progress
+        red = QColor(THEME['accent_red'])
+        
+        painter.save()
+        path = QPainterPath()
+        path.addEllipse(QPointF(cx, cy), radius, radius)
+        painter.setClipPath(path)
+        
+        # Scale/Bounce on entry
+        scale = 1.0
+        if p < 0.5:
+             # Little pop
+             scale = 1.0 + 0.2 * math.sin(p * 3.14 * 2) 
+        
+        painter.translate(cx, cy)
+        painter.scale(scale, scale)
+        painter.translate(-cx, -cy)
+        
+        painter.drawPixmap(int(cx - 18), int(cy - 18), self._champ_pixmap)
+        
+        # Desaturation overlay (Ban state)
+        if self._is_banned:
+             painter.setBrush(QColor(0, 0, 0, 150))
+             painter.setPen(Qt.PenStyle.NoPen)
+             painter.drawRect(0, 0, w, h)
+             
+        painter.restore()
+        
+        # 3. The "X" Slash Animation
+        if self._is_banned:
+             # Draw the X marks
+             # Line 1: Top-Left to Bottom-Right
+             if p > 0.2:
+                  l1_p = min(1.0, (p - 0.2) / 0.3) # 0.2 -> 0.5
+                  painter.setPen(QPen(red, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                  
+                  p1_start = QPointF(cx - 10, cy - 10)
+                  p1_end   = QPointF(cx + 10, cy + 10)
+                  
+                  current_end = p1_start + (p1_end - p1_start) * l1_p
+                  painter.drawLine(p1_start, current_end)
+                  
+             # Line 2: Top-Right to Bottom-Left
+             if p > 0.5:
+                  l2_p = min(1.0, (p - 0.5) / 0.3) # 0.5 -> 0.8
+                  painter.setPen(QPen(red, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+                  
+                  p2_start = QPointF(cx + 10, cy - 10)
+                  p2_end   = QPointF(cx - 10, cy + 10)
+                  
+                  current_end = p2_start + (p2_end - p2_start) * l2_p
+                  painter.drawLine(p2_start, current_end)
             
-            # Draw champion icon with desaturation during animation
-            painter.save()
-            path = QPainterPath()
-            path.addEllipse(QPointF(cx, cy), radius, radius)
-            painter.setClipPath(path)
-            
-            # Slight shake during phase 1
-            shake_x, shake_y = 0, 0
-            if p < 0.4:
-                shake_intensity = math.sin(p * 30) * 2 * (1 - p / 0.4)
-                shake_x = shake_intensity
-                shake_y = shake_intensity * 0.5
-            
-            painter.drawPixmap(int(cx - 18 + shake_x), int(cy - 18 + shake_y), self._champ_pixmap)
-            
-            # Desaturation/darkening overlay
-            if p < 0.7:
-                desat = int(100 * (p / 0.7))
-                painter.setBrush(QColor(0, 0, 0, desat))
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.drawEllipse(QPointF(cx, cy), radius, radius)
-            
-            painter.restore()
-            
-            # Phase 1 (0.0 - 0.35): Vortex spiral converges
-            if p < 0.35:
-                # Draw vortex particles
-                for vp in self._vortex_particles:
-                    alpha = int(200 * vp['life'])
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QColor(red.red(), red.green(), red.blue(), alpha))
-                    painter.drawEllipse(QPointF(vp['x'], vp['y']), vp['size'], vp['size'])
-                
-                # Growing X starts near end of vortex
-                if p > 0.2:
-                    t = (p - 0.2) / 0.15
-                    painter.setPen(QPen(red, 3))
-                    painter.drawLine(int(cx - radius * t * 0.7), int(cy - radius * t * 0.7), 
-                                   int(cx + radius * t * 0.7), int(cy + radius * t * 0.7))
-                    painter.drawLine(int(cx + radius * t * 0.7), int(cy - radius * t * 0.7),
-                                   int(cx - radius * t * 0.7), int(cy + radius * t * 0.7))
-            
-            # Phase 2 (0.35 - 0.55): Shatter - fragments burst outward
-            elif p < 0.55:
-                t = (p - 0.35) / 0.2
-                
-                # X at full size, starting to fade
-                x_alpha = int(255 * (1 - t * 0.5))
-                painter.setPen(QPen(QColor(red.red(), red.green(), red.blue(), x_alpha), 3))
-                painter.drawLine(int(cx - radius * 0.7), int(cy - radius * 0.7), 
-                               int(cx + radius * 0.7), int(cy + radius * 0.7))
-                painter.drawLine(int(cx + radius * 0.7), int(cy - radius * 0.7),
-                               int(cx - radius * 0.7), int(cy + radius * 0.7))
-                
-                # Fragments burst outward
-                for frag in self._shatter_fragments:
-                    frag_dist = 8 * t  # Expand
-                    fx = cx + math.cos(math.radians(frag['angle'])) * (radius + frag_dist)
-                    fy = cy + math.sin(math.radians(frag['angle'])) * (radius + frag_dist)
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QColor(red.red(), red.green() + 30, red.blue() + 30, int(220 * (1 - t * 0.3))))
-                    painter.drawEllipse(QPointF(fx, fy), frag['size'] * (1 - t * 0.3), frag['size'] * (1 - t * 0.3))
-            
-            # Phase 3 (0.55 - 0.8): Fragments settle back, circle forms
-            elif p < 0.8:
-                t = (p - 0.55) / 0.25
-                
-                # Fading X
-                x_alpha = int(128 * (1 - t))
-                if x_alpha > 0:
-                    painter.setPen(QPen(QColor(red.red(), red.green(), red.blue(), x_alpha), 2))
-                    painter.drawLine(int(cx - radius * 0.7), int(cy - radius * 0.7), 
-                                   int(cx + radius * 0.7), int(cy + radius * 0.7))
-                    painter.drawLine(int(cx + radius * 0.7), int(cy - radius * 0.7),
-                                   int(cx - radius * 0.7), int(cy + radius * 0.7))
-                
-                # Fragments settling
-                for frag in self._shatter_fragments:
-                    frag_dist = 8 * (1 - t)  # Contract back
-                    fx = cx + math.cos(math.radians(frag['angle'])) * (radius + frag_dist)
-                    fy = cy + math.sin(math.radians(frag['angle'])) * (radius + frag_dist)
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QColor(red.red(), red.green(), red.blue(), int(180 * (1 - t))))
-                    size = frag['size'] * (0.7 + 0.3 * (1 - t))
-                    painter.drawEllipse(QPointF(fx, fy), size, size)
-                
-                # Growing arc
-                arc_angle = int(360 * 16 * t)
-                painter.setPen(QPen(red, 2))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawArc(int(cx - radius - 1), int(cy - radius - 1), int((radius + 1) * 2), int((radius + 1) * 2), 
-                              90 * 16, -arc_angle)
-            
-            # Phase 4 (0.8 - 1.0): Final state with subtle pulse
-            else:
-                t = (p - 0.8) / 0.2
-                
-                # Full circle border with slight pulse
-                pulse = 1 + 0.1 * math.sin(t * 3.14)
-                painter.setPen(QPen(red, 2 * pulse))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawEllipse(QPointF(cx, cy), radius + 1, radius + 1)
-                
-                # Small persistent X overlay
-                painter.setPen(QPen(QColor(red.red(), red.green(), red.blue(), 150), 1.5))
-                painter.drawLine(int(cx - radius * 0.5), int(cy - radius * 0.5), 
-                               int(cx + radius * 0.5), int(cy + radius * 0.5))
-                painter.drawLine(int(cx + radius * 0.5), int(cy - radius * 0.5),
-                               int(cx - radius * 0.5), int(cy + radius * 0.5))
-        else:
-            # Empty slot with subtle animation
-            painter.setPen(QPen(QColor(THEME['text_dim']), 1, Qt.PenStyle.DashLine))
-            painter.setBrush(QColor(0, 0, 0, 80))
-            painter.drawEllipse(QPointF(cx, cy), radius, radius)
+        # 4. Border Ring
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        border_col = red if self._is_banned else QColor(THEME['border_norm'])
+        painter.setPen(QPen(border_col, 2))
+        painter.drawEllipse(QPointF(cx, cy), radius, radius)
 
 class DraftMirrorWidget(QWidget):
     suggestion_clicked = pyqtSignal(str)
