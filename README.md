@@ -1,35 +1,36 @@
-# VANTAGE: Titan V3.5 Spatial Engine
+# DraftDiff: Titan V3.5 Spatial Engine
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)
-![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)
-![Architecture](https://img.shields.io/badge/Architecture-Transformer_Small-green)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
+[![Status: Developer Beta](https://img.shields.io/badge/Status-Developer_Beta-0ac8b9.svg)]()
 
-**VANTAGE** is an advanced Neural-Symbolic drafting engine for *League of Legends*, powered by **TitanNet V3.5**, a custom Transformer architecture designed for multi-agent pick/ban strategy optimization.
+**DraftDiff** (powered internally by the **Titan V3.5 Engine**) is a heavy-duty, offline coaching and drafting client for competitive *League of Legends*. 
 
-Unlike traditional statistical overlays, Vantage uses a "God Schema" architecture—a unified spatial representation of the draft state—combined with **AlphaZero-Lite MCTS** to predict optimal moves, detect draft archetypes, and simulate future game states in real-time.
+We don't guess the meta—we calculate it. Utilizing extensive Riot API pipelines, local deep neural networks (PyTorch), and Monte Carlo Tree Search, DraftDiff is designed for analysts, coaches, and high-ELO players to calculate optimal draft paths, detect win-conditions, and leverage item gold curves.
+
+> **Note:** DraftDiff is a local, offline environment. It relies wholly on public API endpoints and offline simulation logic to comply fully with Riot Games Developer terms.
 
 ---
 
-## ⚡ Architecture: The God Schema
+## ⚡ Core Features & Claims
 
-The core innovation of Titan V3.5 is the **Spatial Draft Representation**, which factorizes the draft sequence into five causal tensors, allowing the model to understand "Top Lane Blue" vs "Top Lane Red" not just as a Pick Order, but as a topological identity.
+### 1. Data Pipeline: Gold Curve & Timeline Ingestion
+Win rates lie. Item spikes don't. We rely heavily on the **Riot Games Match-V5 API** to ingest millions of high-ELO matches.
+*   **Gold at 15 Analysis:** We rip timeline frames directly from endpoints to calculate differential xp/gold states at 15 minutes, mapping actual champion influence over the game.
+*   **Local SQL Storage:** All data is parsed, compressed via zlib, and stored locally in `brain_v2.db` to act as the massive offline training ground for the neural network. 
 
-### 1. TitanNet (Neural Engine)
+### 2. TitanNet: The Neural Engine
+The core innovation of Titan V3.5 is the **Spatial Draft Representation**, factorizing draft sequences into causal tensors to understand "Top Lane Blue" versus "Top Lane Red" not just as a pick order, but as a topological identity.
 *   **Type**: Causal Transformer Encoder (Pre-LN, 6 Layers, 8 Heads, $d_{model}=256$).
-*   **Input**: A composite embedding of 5 independent feature spaces:
-    *   **$X_{picks}, X_{bans}$**: Champion Identity (Vocab Size 2000).
-    *   **$X_{pos}$**: Temporal Index (1-20 sequence position).
-    *   **$X_{seat}$**: Spatial Seat ID (1-10, decoupling role from turn order).
-    *   **$X_{mast}$**: Player Mastery (Log-normalized skill vector).
-    *   **$X_{meta}$**: Global Context (Patch, Side, CS/Min).
-*   **Mechanism**: Uses **Dynamic Spatial Masking** to enforce strict temporal causality during training, ensuring the model never "cheats" by seeing future bans/picks while processing the current state.
+*   **Inputs**: Spatial Seat IDs, Temporal Index, Champion Identity, and Patch Metadata.
+*   **Mechanism**: Uses **Dynamic Spatial Masking** to enforce strict temporal causality during training.
 
-### 2. Spatial MCTS (Inference Engine)
-*   **Algorithm**: Monte Carlo Tree Search with UCB1 and Neural Guidance.
-*   **Policy Head**: Predicts the probability distribution $\pi(a|s)$ for the next move.
-*   **Value Head**: Predicts win probability $v \in [0, 1]$ from the current leaf node.
-*   **Draft Simulation**: Simulates the remaining 10-player draft sequence to find the Nash Equilibrium of the current lobby.
+### 3. Spatial MCTS (Inference Engine)
+Calculating the optimal draft isn't a simple heuristic. DraftDiff uses extensive **Monte Carlo Tree Search** permutations to traverse potential pick/ban states.
+*   **Algorithm**: MCTS with UCB1 and Neural Guidance.
+*   **Policy & Value Heads**: Predicts the probability distribution $\pi(a|s)$ for the next move, and win probability $v \in [0, 1]$ directly from the leaf nodes.
+*   **Nash Equilibrium**: Simulates the remaining 10-player draft sequence to find the optimal path against highly specific opposing compositions.
 
 ---
 
@@ -37,8 +38,8 @@ The core innovation of Titan V3.5 is the **Spatial Draft Representation**, which
 
 ### Prerequisites
 *   Python 3.10+
-*   PyTorch (CUDA recommended for inference speed)
-*   Node.js & NPM (for the Overlay)
+*   PyTorch (CUDA highly recommended for MCTS inference speed)
+*   A Riot Games Developer API Key (To power the data pipeline)
 
 ### Installation
 
@@ -48,42 +49,40 @@ The core innovation of Titan V3.5 is the **Spatial Draft Representation**, which
     cd LoL-Draft-AI
     ```
 
-2.  **Install Python Dependencies**
+2.  **Environment Setup**
+    Create a `.env` file in the root directory and add your Riot Developer credentials:
+    ```
+    RIOT_API_KEY=RGAPI-your-key-here
+    RIOT_REGION=euw1
+    ```
+
+3.  **Install Python Dependencies**
     ```bash
     pip install -r requirements.txt
     ```
 
-3.  **Launch the Engine & Overlay**
+4.  **Launch the Core System**
     ```bash
-    # Start the Python Backend (Lobby Sensor + Inference)
+    # Start the local Engine Interface
     python src/interface/titan_app.py
     ```
 
-    *The overlay communicates with the League Client (LCU) automatically.*
-
 ---
 
-## 📂 Project Structure
+## 📂 Project Architecture
 
 *   `src/engine/`: Core Neural Network & MCTS Logic.
-    *   `titan_brain.py`: **TitanNet V3.5** Model Definition (PyTorch).
-    *   `mcts.py`: **SpatialMCTS** Implementation.
-    *   `train_titan.py`: Training Loop with Causal Masking.
-*   `src/interface/`: UI and LCU Integration.
-    *   `titan_app.py`: Main Application Entry Point (PyQt/Overlay).
-    *   `lcu_connector.py`: WebSocket bridge to the League Client.
-*   `overlay/`: Electron/React Frontend (Legacy/Alternative UI).
+*   `src/data/`: Pipeline scripts interfacing with Riot League-V4 and Match-V5 APIs.
+*   `src/tools/`: Scripts for data sanitation, SQLite ingestion, and Tensor compilation.
+*   `landing-page/`: Front-end static assets for the DraftDiff application verification.
 
 ---
 
-## 🤝 Contributing
+## 🤝 Contributing & Legal
 
-Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details on our code of conduct and the process for submitting pull requests.
+Contributions are welcome! Please read [CONTRIBUTING.md](CONTRIBUTING.md) for details context.
 
-## 📄 License
-
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+*DraftDiff isn’t endorsed by Riot Games and doesn’t reflect the views or opinions of Riot Games or anyone officially involved in producing or managing League of Legends. League of Legends and Riot Games are trademarks or registered trademarks of Riot Games, Inc. League of Legends © Riot Games, Inc.*
 
 ---
-
-*Powered by PyTorch & Spatial Intelligence.*
+*Powered by PyTorch, MCTS, and Statistical Rigor.*

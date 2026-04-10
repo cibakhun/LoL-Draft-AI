@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DraftDiff | Offline PyTorch Drafting Engine</title>
+    <meta name="description" content="Local, offline drafting and coaching engine utilizing PyTorch neural networks and MCTS for League of Legends.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=Outfit:wght@400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="glow-bg"></div>
+    <div class="grid-overlay"></div>
+
+    <nav class="navbar">
+        <div class="logo">
+            <span class="highlight">Draft</span>Diff
+        </div>
+        <div class="nav-links">
+            <a href="#engine">Engine</a>
+            <a href="#models">Models</a>
+            <a href="#data">Pipeline</a>
+        </div>
+        <a href="#download" class="btn btn-outline">Developer Access</a>
+    </nav>
+
+    <main>
+        <section class="hero">
+            <div class="hero-content">
+                <div class="badge">Local • Offline • PyTorch</div>
+                <h1>Precision Drafting <br><span class="highlight-gradient">Intelligence.</span></h1>
+                <p class="subtitle">
+                    A heavy-duty offline coaching client. We don't guess the meta—we calculate it. Utilizing Monte Carlo Tree Search and custom neural network pipelines to evaluate champion synergies and item gold curves at the Challenger level.
+                </p>
+                <div class="hero-actions">
+                    <a href="#architecture" class="btn btn-primary">View Architecture</a>
+                    <a href="https://github.com/cibakhun/LoL-Draft-AI" target="_blank" class="btn btn-secondary">Source Code</a>
+                </div>
+            </div>
+            
+            <div class="hero-visual">
+                <div class="glass-card terminal">
+                    <div class="terminal-header">
+                        <span class="dot red"></span>
+                        <span class="dot yellow"></span>
+                        <span class="dot green"></span>
+                        <p>engine_v3.py</p>
+                    </div>
+                    <pre><code>[INFO] Loading brain_v2.db... (2.4 GB)
+[INFO] Initialize PyTorch Neural Pipeline
+[SUCCESS] Loaded timeline records for 1.2M matches
+[MCTS] Calculating Draft Tree Node 4,921...
+[PREDICTION] Red Side Win Probability: 43.2%
+[WARNING] Jungle/Mid Synergistic Deficit Detected
+-> Suggestion: Prioritize CC heavy Frontline...</code></pre>
+                </div>
+            </div>
+        </section>
+
+        <section id="engine" class="features">
+            <div class="section-header">
+                <h2>No Fluff. <span class="highlight">Just Math.</span></h2>
+                <p>DraftDiff is unapologetically technical. We built an offline engine that ingests massive amounts of Match-V5 data directly into local SQL databases for rigorous training.</p>
+            </div>
+
+            <div class="feature-grid">
+                <div class="glass-card feature-card">
+                    <div class="icon-wrapper">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+                    </div>
+                    <h3>Monte Carlo Tree Search</h3>
+                    <p>Calculating the optimal draft isn't a simple heuristic. DraftDiff uses extensive MCTS permutations to traverse potential pick/ban states and identify win-condition nodes against specific opponent compositions.</p>
+                </div>
+
+                <div class="glass-card feature-card">
+                    <div class="icon-wrapper highlight-icon">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path><polyline points="7.5 4.21 12 6.81 16.5 4.21"></polyline><polyline points="7.5 19.79 7.5 14.6 3 12"></polyline><polyline points="21 12 16.5 14.6 16.5 19.79"></polyline><polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline><line x1="12" y1="22.08" x2="12" y2="12"></line></svg>
+                    </div>
+                    <h3>PyTorch Synergy Models</h3>
+                    <p>Evaluating champion performance requires multi-dimensional analysis. Our deep neural networks ingest spatial lane mappings, patch metadata, and cross-role synergies to output precise drafting deficits.</p>
+                </div>
+
+                <div class="glass-card feature-card">
+                    <div class="icon-wrapper">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"></path><path d="M18.7 8l-5.1 5.2-2.8-2.7L7 14.3"></path></svg>
+                    </div>
+                    <h3>Gold Curve Ingestion</h3>
+                    <p>Win rates lie. Item spikes don't. We rip timeline endpoints directly from Riot API to calculate differential xp/gold states at 15 minutes, mapping actual champion influence over game states.</p>
+                </div>
+            </div>
+        </section>
+
+        <section id="waitlist" class="cta-section">
+            <div class="glass-card cta-card">
+                <h2>Ready for rigorous drafting?</h2>
+                <p>The Titan Engine requires a local PyTorch installation and significant processing power. It is currently in a closed developer beta.</p>
+                <div class="mock-form">
+                    <input type="email" placeholder="Enter analyst email..." disabled>
+                    <button class="btn btn-primary" onclick="alert('Access request submitted to developer waitlist.')">Request Build</button>
+                </div>
+                <div class="disclaimer">
+                  Not affiliated with Riot Games. DraftDiff relies entirely on official API routes and respects all player privacy guidelines.
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <div class="footer-content">
+            <div class="logo">
+                <span class="highlight">Draft</span>Diff
+            </div>
+            <p>High-ELO Drafting Intelligence. © 2026. Data sourced under Riot Games guidelines.</p>
+        </div>
+    </footer>
+</body>
+</html>
