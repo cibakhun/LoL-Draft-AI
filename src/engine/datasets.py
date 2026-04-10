@@ -6,7 +6,6 @@ import numpy as np
 import zlib
 import json
 import os
-from src.engine.schema import FeatureConfig as Cfg
 
 class TitanMemoryDataset(Dataset):
     """
@@ -109,108 +108,98 @@ class BrainDataset(Dataset):
         return len(self.match_ids)
 
     def __getitem__(self, idx):
-        mid = self.match_ids[idx]
+        max_retries = 50
+        current_idx = idx
         
-        # 1. Check RAM Cache
-        if mid in self.ram_cache:
-            return self.ram_cache[mid]
-        
-        # New Connection per thread/worker
-        conn = sqlite3.connect(self.db_path)
-        c = conn.cursor()
-        
-        # 1. Fetch Participants
-        # We need this to build the team dicts for Vectorization
-        q = """
-        SELECT p.team_id, p.role, p.champion_id, p.win, p.gold_at_15
-        FROM participants p
-        WHERE p.match_id = ? AND p.role IN ('TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY')
-        """
-        c.execute(q, (mid,))
-        rows = c.fetchall()
-        
-        # 2. Fetch Timeline Blob
-        c.execute("SELECT frame_data FROM match_frames WHERE match_id = ?", (mid,))
-        blob_row = c.fetchone()
-        
-        conn.close()
-        
-        # Pivot Structure
-        blue = {}
-        red = {}
-        win_label = 0
-        
-        # rows: (team, role, cid, win, gold)
-        # Note: We need full team? training requires it.
-        
-        for r in rows:
-            tid, role, cid, win, gold = r
-            if tid == 100:
-                blue[role] = cid
-                if win: win_label = 1
-            else:
-                red[role] = cid
-        
-        # Vectorize Sequence
-        # Returns (draft_ids, spatial_seats, temporal_turns)
-        d_ids, s_ids, t_ids = self.feature_engine.vectorize_sequence(blue, red, training_mode=True)
-        
-        # Process Timeline
-        if blob_row and blob_row[0]:
-            try:
-                # 1. Decoding Layer (Zlib Fallback)
-                raw_blob = blob_row[0]
-                try:
-                    decompressed = zlib.decompress(raw_blob).decode('utf-8')
-                except (zlib.error, OSError):
-                    # Fallback: Maybe it's not compressed?
-                    if isinstance(raw_blob, bytes):
-                        decompressed = raw_blob.decode('utf-8')
-                    else:
-                        decompressed = str(raw_blob)
-
-                # 2. JSON Parse
-                data = json.loads(decompressed)
-                
-                # Polymorphic Parsing Logic
-                full_timeline = []
-                if isinstance(data, list):
-                    # Case 1: Direct List
-                    full_timeline = data
-                elif isinstance(data, dict) and 'info' in data and 'frames' in data['info']:
-                    # Case 2: Riot V5
-                    full_timeline = data['info']['frames']
-                elif isinstance(data, dict) and 'frames' in data:
-                    # Case 3: Legacy Dict
-                    full_timeline = data['frames']
+        for attempt in range(max_retries):
+            mid = self.match_ids[current_idx]
+            
+            # 1. Check RAM Cache
+            if mid in self.ram_cache:
+                return self.ram_cache[mid]
+            
+            # New Connection per thread/worker
+            conn = sqlite3.connect(self.db_path)
+            c = conn.cursor()
+            
+            # 1. Fetch Participants
+            q = """
+            SELECT p.team_id, p.role, p.champion_id, p.win, p.gold_at_15
+            FROM participants p
+            WHERE p.match_id = ? AND p.role IN ('TOP', 'JUNGLE', 'MIDDLE', 'BOTTOM', 'UTILITY')
+            """
+            c.execute(q, (mid,))
+            rows = c.fetchall()
+            
+            # 2. Fetch Timeline Blob
+            c.execute("SELECT frame_data FROM match_frames WHERE match_id = ?", (mid,))
+            blob_row = c.fetchone()
+            
+            conn.close()
+            
+            # Pivot Structure
+            blue = {}
+            red = {}
+            win_label = 0
+            
+            for r in rows:
+                tid, role, cid, win, gold = r
+                if tid == 100:
+                    blue[role] = cid
+                    if win: win_label = 1
                 else:
-                    # Invalid Format
-                    # We might mark this as corrupt, but for now just fail hard as requested
-                    # Or return recursion? User asked to "mark as corrupt" (via Exception?)
-                    # "Code soll einen Fehler werfen, der den Match als korrupt markiert" -> implies raising logic
-                    raise ValueError(f"Unknown timeline format for match {mid}")
+                    red[role] = cid
+            
+            # Vectorize Sequence
+            d_ids, s_ids, t_ids = self.feature_engine.vectorize_sequence(blue, red, training_mode=True)
+            
+            # Process Timeline
+            skip = False
+            if blob_row and blob_row[0]:
+                try:
+                    raw_blob = blob_row[0]
+                    try:
+                        decompressed = zlib.decompress(raw_blob).decode('utf-8')
+                    except (zlib.error, OSError):
+                        if isinstance(raw_blob, bytes):
+                            decompressed = raw_blob.decode('utf-8')
+                        else:
+                            decompressed = str(raw_blob)
 
-                # Quality Filter: FF@15 Rule
-                if len(full_timeline) < 15:
-                    raise ValueError(f"Match {mid} is too short ({len(full_timeline)} frames). Min required: 15.")
+                    data = json.loads(decompressed)
+                    
+                    full_timeline = []
+                    if isinstance(data, list):
+                        full_timeline = data
+                    elif isinstance(data, dict) and 'info' in data and 'frames' in data['info']:
+                        full_timeline = data['info']['frames']
+                    elif isinstance(data, dict) and 'frames' in data:
+                        full_timeline = data['frames']
+                    else:
+                        raise ValueError(f"Unknown timeline format for match {mid}")
 
-                # Validation: Frame 0
-                if not full_timeline[0].get('participantFrames'):
-                    # This is also a form of corruption
-                    raise ValueError(f"Match {mid} missing participantFrames in Frame 0.")
+                    if len(full_timeline) < 15:
+                        raise ValueError(f"Match {mid} is too short ({len(full_timeline)} frames). Min required: 15.")
 
-            except Exception as e:
-                # Log error and skip
-                with open("error_log.txt", "a") as f:
-                    f.write(f"{mid}: {e}\n")
-                print(f"[Dataset] Skip {mid}: Parse Error {e}")
-                return self.__getitem__((idx + 1) % len(self.match_ids))
+                    if not full_timeline[0].get('participantFrames'):
+                        raise ValueError(f"Match {mid} missing participantFrames in Frame 0.")
+
+                except Exception as e:
+                    with open("error_log.txt", "a") as f:
+                        f.write(f"{mid}: {e}\n")
+                    skip = True
+            else:
+                skip = True
+            
+            if skip:
+                current_idx = (current_idx + 1) % len(self.match_ids)
+                continue
+            
+            # If we get here, data is valid — break out of retry loop
+            break
         else:
-            # Missing Blob
-            print(f"[Dataset] Skip {mid}: No blob data.")
-            return self.__getitem__((idx + 1) % len(self.match_ids))
-        
-        # Encode Timeline -> Tensor [T, 20]
+            # All retries exhausted
+            raise RuntimeError(f"[Dataset] All {max_retries} retries exhausted starting from idx {idx}. Dataset may be corrupt.")
         # X_time is np.array
         X_time = self.feature_engine.encode_timeline(full_timeline)
         
@@ -221,6 +210,8 @@ class BrainDataset(Dataset):
         # Numpy is standard.
         
         # Synthesize missing V3 inputs for Online Dataset
+        # WARNING [TITAN V3.5]: SQLite schema limits do not provide raw ban data here.
+        # To train the policy head with bans, strictly use compile_dataset.py and TitanMemoryDataset
         # Bans: Empty (0)
         # Mastery: Empty (0.0)
         # Meta: Default (Skill 6.0, Patch 14.1, Side 0)

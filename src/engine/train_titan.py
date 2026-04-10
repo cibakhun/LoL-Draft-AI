@@ -7,7 +7,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../'
 import torch
 import torch.nn as nn
 from torch.utils.data import TensorDataset, DataLoader
-from src.engine.titan_brain import TitanBrain
+from src.engine.titan_brain import TitanBrain, VOCAB_SIZE
 
 from src.engine.datasets import TitanMemoryDataset
 
@@ -19,38 +19,6 @@ def load_dataset_mmap(path):
         print(f"Failed to load dataset {path}: {e}")
         return None
 
-def generate_hybrid_mask(size=21, context_size=11):
-    """
-    Generates a mask where:
-    - Context (0..context_size-1) sees itself fully (0..context_size-1).
-    - Future (context_size..end) sees Context fully.
-    - Future sees itself Causally (Triangular).
-    - Context CANNOT see Future.
-    """
-    # Initialize with -inf (Block All)
-    mask = torch.ones(size, size) * float('-inf')
-    
-    # 1. Context Block (Full Visibility)
-    mask[:context_size, :context_size] = 0.0
-    
-    # 2. Future sees Context (Full Visibility)
-    mask[context_size:, :context_size] = 0.0
-    
-    # 3. Future sees Future (Causal)
-    future_len = size - context_size
-    
-    # Generate sub-mask for future block (Upper Triangle = -inf)
-    # We want Row i to see 0..i.
-    m = torch.zeros(future_len, future_len)
-    
-    # Fill Upper Triangle with -inf
-    for i in range(future_len):
-        for j in range(i + 1, future_len):
-            m[i, j] = float('-inf')
-            
-    mask[context_size:, context_size:] = m
-    
-    return mask
 
 def main():
     print("--- TitanNet V3 Ignition Sequence (Safe Mode) ---")
@@ -74,14 +42,9 @@ def main():
     
     # 2. Initialize Brain
     brain = TitanBrain("titan_v3_model.pt")
-    brain.initialize(vocab_size=3000)
+    brain.initialize(vocab_size=VOCAB_SIZE)
     
-    # 3. Mask Setup
-    # 0: Meta
-    # 1-10: Bans (Index 1-10)
-    # Total Context = 11 tokens.
-    # 11-20: Picks (Index 11-20)
-    causal_mask = generate_hybrid_mask(21, context_size=11)
+    # V3.5: Dynamic masking is done internally via x_times — no external mask needed
     
     EPOCHS = 1
     os.makedirs("checkpoints", exist_ok=True)
@@ -125,6 +88,7 @@ def main():
         # Validation
         brain.model.eval()
         val_mse = 0.0
+        val_pol = 0.0
         val_batches = 0
         
         with torch.no_grad():
@@ -138,17 +102,29 @@ def main():
                 x_times = x_times.to(brain.device).long()
                 y = y.to(brain.device).float()
                 
-                # Validation without mask to test full draft understanding
-                # (Peeking allows checking if Value Head works on full sequence)
+                # Use dynamically generated causal mask within TitanNet for true predictive testing
                 mask_val = None 
                 
                 out = brain.model(xp, xt, xb, xm, xmeta, x_times=x_times, src_mask=mask_val)
-                loss = torch.nn.MSELoss()(out['value'], y)
-                val_mse += loss.item()
+                loss_mse = torch.nn.MSELoss()(out['value'], y)
+                val_mse += loss_mse.item()
+                
+                # Compute Policy Loss
+                logits = out['policy'].reshape(-1, out['policy'].size(-1))
+                t_meta = torch.zeros((xp.size(0), 1), dtype=torch.long, device=brain.device)
+                raw_tokens = torch.cat([t_meta, xb, xp], dim=1)
+                sort_idx = out['sort_indices']
+                sorted_tokens = torch.gather(raw_tokens, 1, sort_idx)
+                targets = sorted_tokens[:, 1:].contiguous().view(-1)
+                
+                loss_pol = torch.nn.CrossEntropyLoss()(logits, targets)
+                val_pol += loss_pol.item()
+                
                 val_batches += 1
                 
         avg_val_mse = val_mse / max(1, val_batches)
-        print(f"[Valid] MSE Loss: {avg_val_mse:.4f}")
+        avg_val_pol = val_pol / max(1, val_batches)
+        print(f"[Valid] MSE Loss: {avg_val_mse:.4f} | Policy Loss: {avg_val_pol:.4f}")
         
         if avg_val_mse < best_val_loss:
             best_val_loss = avg_val_mse

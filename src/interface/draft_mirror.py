@@ -3,7 +3,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize, QPropertyAnimation, QEasingCurve
 from PyQt6.QtGui import QColor, QFont, QPixmap, QPainter, QPen, QBrush, QPainterPath, QLinearGradient
 import math
 
-from src.interface.components import THEME, CardWidget, HexFrame, HexEffect, AnimatedHexFrame
+from src.interface.components import THEME, CardWidget, HexFrame, HexEffect, GlassPanel
 
 class PhaseTrackerWidget(QWidget):
     def __init__(self):
@@ -44,21 +44,23 @@ class PhaseTrackerWidget(QWidget):
 
 
 
-class DraftSlotWidget(HexFrame):
+class DraftSlotWidget(QWidget):
     """
     Represents a single player slot in the draft (0-9).
+    Tactical angled readout style.
     """
     clicked = pyqtSignal(int)
 
     def __init__(self, cell_id, loader):
-        # Determine color key based on side
-        side_color = 'accent_blue' if cell_id < 5 else 'accent_red'
-        super().__init__(active=False, color_key="border_norm") 
+        super().__init__() 
         
         self.cell_id = cell_id
         self.loader = loader
-        self.side_color = side_color
-        self._is_active_turn = False  # Track if this is the active player's turn
+        # Determine side (0-4 is Blue Left, 5-9 is Red Right)
+        self.is_left = self.cell_id < 5
+        self.side_color = 'accent_blue' if self.is_left else 'accent_red'
+        self._is_active_turn = False  
+        self._splash_pixmap = None
         
         self.setFixedHeight(85)  # Taller slots for premium feel
         self.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -148,35 +150,114 @@ class DraftSlotWidget(HexFrame):
         self.update()
     
     def paintEvent(self, event):
-        super().paintEvent(event)  # Draw base HexFrame
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         
-        if self._is_active_turn:
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        w, h = self.width(), self.height()
+        
+        # --- 1. TACTICAL FLAT BACKGROUND PATH ---
+        path = QPainterPath()
+        path.addRoundedRect(0, 0, w, h, 4, 4)
+        
+        painter.save()
+        painter.setClipPath(path)
+        
+        # Base shadow
+        painter.fillPath(path, QColor(0,0,0, 180))
+        
+        # Draw Splash Background Layer
+        if self._splash_pixmap:
+            # Scale and center
+            scaled = self._splash_pixmap.scaled(w, h, Qt.AspectRatioMode.KeepAspectRatioByExpanding, Qt.TransformationMode.SmoothTransformation)
             
-            w, h = self.width(), self.height()
+            # Parallax/Face alignment (Shift up slightly to capture faces)
+            y_offset = (h - scaled.height()) // 2
+            painter.drawPixmap(0, int(y_offset * 0.7), scaled)
+            
+            # 1. Text Readability Gradient (Aggressive fade from alignment edge)
+            grad_text = QLinearGradient(0, 0, w * 0.6, 0) if self.is_left else QLinearGradient(w, 0, w * 0.4, 0)
+            bg_c = QColor(THEME['bg_main'])
+            bg_c.setAlpha(240)
+            grad_text.setColorAt(0, bg_c)
+            bg_c.setAlpha(0)
+            grad_text.setColorAt(1, bg_c)
+            painter.setBrush(QBrush(grad_text))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRect(0, 0, w, h)
+            
+            # 2. Hover/Active Tint Overlay
+            if self._is_active_turn or self.glow.isEnabled():
+                tint = QColor(THEME['radiant_gold'] if self._is_active_turn and self.status_lbl.text() == "LOCKED" else THEME['accent_blue'] if self.is_left else THEME['accent_red'])
+                tint.setAlpha(min(255, max(0, int(40 + 60 * self._hover_progress))))
+                painter.setBrush(tint)
+                painter.drawRect(0, 0, w, h)
+        else:
+            # Static Deep Glass
+            grad = QLinearGradient(0, 0, w, 0) if self.is_left else QLinearGradient(w, 0, 0, 0)
+            base_a = min(255, max(0, int(180 + 75 * self._hover_progress)))
+            bg_col = QColor(THEME['bg_glass'])
+            bg_col.setAlpha(base_a)
+            
+            if self._is_active_turn or self.glow.isEnabled():
+                tint = QColor(THEME['accent_blue']) if self.is_left else QColor(THEME['accent_red'])
+                tint.setAlpha(min(255, max(0, int(60 + 40 * self._hover_progress))))
+                grad.setColorAt(0, tint)
+                grad.setColorAt(1, bg_col)
+            else:
+                grad.setColorAt(0, bg_col)
+                grad.setColorAt(1, QColor(5, 10, 15, int(150 + 50 * self._hover_progress)))
+                
+            painter.setBrush(QBrush(grad))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRect(0, 0, w, h)
+            
+        painter.restore() # Drop clipping for outer borders
+        
+        # --- 2. GLASS BORDER & ACCENTS ---
+        b_col = QColor(THEME['border_active'] if self._is_active_turn else THEME['border_norm'])
+        b_thick = 2
+        if self._is_active_turn:
+             intensity = 0.5 + 0.5 * math.sin(self._glow_phase)
+             b_thick = 2 + (2 * intensity)
+             b_col = QColor(THEME['accent_blue']) if self.is_left else QColor(THEME['accent_red'])
+             if self.status_lbl.text() == "LOCKED":
+                 b_col = QColor(THEME['radiant_gold'])
+             
+        painter.setPen(QPen(b_col, b_thick))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        painter.drawPath(path)
+        
+        # --- 3. ACTIVE TURN SPOTLIGHT ---
+        if self._is_active_turn:
             intensity = 0.5 + 0.5 * math.sin(self._glow_phase)
             
-            # Spotlight gradient from bottom
             spotlight_grad = QLinearGradient(0, h, 0, 0)
-            spotlight_alpha = int(40 + 30 * intensity)
-            spotlight_grad.setColorAt(0, QColor(10, 200, 180, spotlight_alpha))
-            spotlight_grad.setColorAt(0.5, QColor(10, 200, 180, int(spotlight_alpha * 0.3)))
-            spotlight_grad.setColorAt(1, QColor(10, 200, 180, 0))
+            spotlight_alpha = min(255, max(0, int(60 + 40 * intensity)))
+            c_spot = b_col
+            c_spot.setAlpha(spotlight_alpha)
             
+            spotlight_grad.setColorAt(0, c_spot)
+            spotlight_grad.setColorAt(0.6, QColor(c_spot.red(), c_spot.green(), c_spot.blue(), 0))
+            
+            painter.save()
+            painter.setClipPath(path)
             painter.setPen(Qt.PenStyle.NoPen)
             painter.setBrush(QBrush(spotlight_grad))
-            painter.drawRoundedRect(self.rect(), 6, 6)
+            painter.drawRect(0, 0, w, h)
+            painter.restore()
             
-            # "YOUR TURN" text (right side)
-            text_alpha = int(200 + 55 * intensity)
-            painter.setPen(QColor(THEME['accent_blue'].replace('#', ''), text_alpha))
-            font = QFont(THEME['font_main'], 9, QFont.Weight.Bold)
-            font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 2)
-            painter.setFont(font)
-            painter.drawText(self.rect().adjusted(0, 0, -15, 0), 
-                           Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter, 
-                           "YOUR TURN")
+            # High-intensity bottom accent
+            line_w = w * intensity
+            painter.setBrush(c_spot)
+            if self.is_left:
+                painter.drawRect(0, h-3, int(line_w), 3)
+            else:
+                painter.drawRect(int(w - line_w), h-3, int(line_w), 3)
+
+    def set_active(self, active):
+        self._is_active_turn = active
+        self.update()
 
     def update_state(self, champ_id, summoner_name, is_active, is_self=False, is_banning=False):
         self.set_active(is_active or is_self)
@@ -203,15 +284,26 @@ class DraftSlotWidget(HexFrame):
 
         self.name_lbl.setText(summoner_name if summoner_name else f"SUMMONER {self.cell_id}")
         
-        # Icon
+        # Icon / Splash Art Banner
         if champ_id:
-            pix = self.loader.hexagon_mask(self.loader.get_champ_icon_path(str(champ_id)), 48, THEME['border_active'] if is_active or is_self else THEME['border_norm'], 2)
-            self.icon_lbl.setPixmap(pix)
-            self.icon_lbl.setStyleSheet(f"background-color: transparent; border: none;")
+            splash_path = self.loader.get_champ_splash_path(str(champ_id))
+            if splash_path:
+                self._splash_pixmap = QPixmap(splash_path)
+                self.icon_lbl.setVisible(False) # Hide small icon so splash takes priority
+            else:
+                # Fallback to tiny icon if splash fails
+                pix = self.loader.hexagon_mask(self.loader.get_champ_icon_path(str(champ_id)), 48, THEME['border_active'] if is_active or is_self else THEME['border_norm'], 2)
+                self.icon_lbl.setPixmap(pix)
+                self.icon_lbl.setVisible(True)
+                
             if not is_active: self.status_lbl.setText("LOCKED")
         else:
+            self._splash_pixmap = None
             self.icon_lbl.clear()
+            self.icon_lbl.setVisible(True)
             self.icon_lbl.setStyleSheet(f"background-color: #000; border-radius: 4px; border: 2px solid {THEME['border_norm']};")
+            
+        self.update()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
@@ -313,36 +405,28 @@ class BanSlotWidget(QWidget):
         
         # Desaturation overlay (Ban state)
         if self._is_banned:
-             painter.setBrush(QColor(0, 0, 0, 150))
+             painter.setBrush(QColor(0, 0, 0, 180))
              painter.setPen(Qt.PenStyle.NoPen)
              painter.drawRect(0, 0, w, h)
              
         painter.restore()
         
-        # 3. The "X" Slash Animation
-        if self._is_banned:
-             # Draw the X marks
-             # Line 1: Top-Left to Bottom-Right
-             if p > 0.2:
-                  l1_p = min(1.0, (p - 0.2) / 0.3) # 0.2 -> 0.5
-                  painter.setPen(QPen(red, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                  
-                  p1_start = QPointF(cx - 10, cy - 10)
-                  p1_end   = QPointF(cx + 10, cy + 10)
-                  
-                  current_end = p1_start + (p1_end - p1_start) * l1_p
-                  painter.drawLine(p1_start, current_end)
-                  
-             # Line 2: Top-Right to Bottom-Left
-             if p > 0.5:
-                  l2_p = min(1.0, (p - 0.5) / 0.3) # 0.5 -> 0.8
-                  painter.setPen(QPen(red, 3, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
-                  
-                  p2_start = QPointF(cx + 10, cy - 10)
-                  p2_end   = QPointF(cx - 10, cy + 10)
-                  
-                  current_end = p2_start + (p2_end - p2_start) * l2_p
-                  painter.drawLine(p2_start, current_end)
+        # 3. Minimalist Cross-out Overlay
+        if self._is_banned and p > 0.01:
+             painter.save()
+             painter.translate(cx, cy)
+             
+             cross_alpha = min(255, max(0, int(255 * p)))
+             pen_red = QColor(red)
+             pen_red.setAlpha(cross_alpha)
+             
+             # Thin elegant red accent line across the icon
+             painter.setPen(QPen(pen_red, 2, Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap))
+             l_len = radius * 0.7 * p
+             painter.drawLine(QPointF(-l_len, -l_len), QPointF(l_len, l_len))
+             painter.drawLine(QPointF(-l_len, l_len), QPointF(l_len, -l_len))
+             
+             painter.restore()
             
         # 4. Border Ring
         painter.setBrush(Qt.BrushStyle.NoBrush)
@@ -420,8 +504,8 @@ class DraftMirrorWidget(QWidget):
             self.left_col.addWidget(s)
         self.body_layout.addLayout(self.left_col, 1)
         
-        # Center Panel (with animated rotating border)
-        self.center_frame = AnimatedHexFrame(active=True, color_key='border_active')
+        # Center Panel (with sleek GlassPanel border)
+        self.center_frame = GlassPanel(active=True, color_key='border_active')
         self.center_frame.setFixedWidth(320)
         self.center_layout = QVBoxLayout(self.center_frame)
         self.center_layout.setContentsMargins(10, 20, 10, 20)

@@ -35,7 +35,7 @@ class SpatialMCTS:
         self.fe = feature_engine
         self.c_puct = c_puct
         self.n_sims = n_sims
-        self.device = next(model.parameters()).device if model else 'cpu'
+        self.device = model.device if hasattr(model, 'device') else getattr(next(model.parameters(), None), 'device', 'cpu') if model else 'cpu'
 
     def search(self, initial_tensors, active_slot_id, valid_actions=None):
         """
@@ -54,12 +54,18 @@ class SpatialMCTS:
         # Index 0 corresponds to Picks 0.
         # So yes, we look at policy_logits[:, active_slot_id, :]
         
-        policy_logits, _ = self.evaluate(root.state)
-        # policy_logits is [10, Vocab] after squeeze
+        policy_logits, _, sort_idx = self.evaluate(root.state)
+        # policy_logits is [20, Vocab] after evaluate
         
-        # Valid Mask
-        # We pass the logits for the *specific slot*
-        slot_logits = policy_logits[active_slot_id]
+        # Correctly map spatial slot back to its chronological state via sort_indices
+        target_raw_index = 11 + active_slot_id
+        try:
+            pos_in_sorted = np.where(sort_idx == target_raw_index)[0][0]
+            pred_index = max(0, pos_in_sorted - 1)
+        except IndexError:
+            pred_index = 10 + active_slot_id
+            
+        slot_logits = policy_logits[pred_index]
         
         valid_probs = self.mask_logits(slot_logits, initial_tensors, valid_actions)
         
@@ -92,11 +98,17 @@ class SpatialMCTS:
                 # Identify NEXT empty slot
                 next_slot = self.get_next_empty_slot(node.state)
                 if next_slot != -1:
-                    pol, _ = self.evaluate(node.state)
+                    pol, _, sort_idx = self.evaluate(node.state)
                     # For simulation, we just pick top moves for the CLONE
                     # Expand Top 5
-                    
-                    slot_logits = pol[next_slot]
+                    target_raw_index = 11 + next_slot
+                    try:
+                        pos_in_sorted = np.where(sort_idx == target_raw_index)[0][0]
+                        pred_index = max(0, pos_in_sorted - 1)
+                    except IndexError:
+                        pred_index = 10 + next_slot
+                        
+                    slot_logits = pol[pred_index]
                     sub_valid = self.mask_logits(slot_logits, node.state, None) # All valid
                     top_v, top_i = torch.topk(torch.tensor(sub_valid), 5)
                     
@@ -178,7 +190,11 @@ class SpatialMCTS:
     def apply_move(self, state, action, slot_idx):
         picks = state[0].clone()
         picks[0][slot_idx] = action
-        return (picks, state[1], state[2], state[3], state[4], state[5])
+        # Update temporal ordering: assign the next turn index to the filled slot
+        times = state[5].clone()
+        current_max_time = times[0].max().item()
+        times[0][slot_idx] = min(30, current_max_time + 1)
+        return (picks, state[1], state[2], state[3], state[4], times)
 
     def get_next_empty_slot(self, state):
         picks = state[0][0]
@@ -193,11 +209,11 @@ class SpatialMCTS:
         self.model.eval()
         with torch.no_grad():
             out = self.model(state[0], state[1], state[2], state[3], state[4], x_times=state[5])
-        # Returns [10, Vocab], Value
-        return out['policy'][0].cpu().numpy(), out['value'].item()
+        # Returns [20, Vocab], Value, and the Sort Map
+        return out['policy'][0].cpu().numpy(), out['value'].item(), out['sort_indices'][0].cpu().numpy()
 
     def get_value(self, state):
-        _, val = self.evaluate(state)
+        _, val, _ = self.evaluate(state)
         return val
 
     def mask_logits(self, logits, state, valid_actions):
@@ -226,9 +242,16 @@ class SpatialMCTS:
             slot = self.get_next_empty_slot(curr)
             if slot == -1: break
             
-            pol, _ = self.evaluate(curr)
-            # Use policy for THAT slot
-            slot_logits = pol[slot]
+            pol, _, sort_idx = self.evaluate(curr)
+            
+            target_raw_index = 11 + slot
+            try:
+                pos_in_sorted = np.where(sort_idx == target_raw_index)[0][0]
+                pred_index = max(0, pos_in_sorted - 1)
+            except IndexError:
+                pred_index = 10 + slot
+                
+            slot_logits = pol[pred_index]
             probs = self.mask_logits(slot_logits, curr, None)
             action = np.argmax(probs)
             

@@ -126,31 +126,18 @@ class TitanOverlay(QMainWindow):
         
         # Ambient Background Animation
         self._ambient_phase = 0.0
-        self._bg_particles = []
-        # Color variants: teal, gold, white
-        particle_colors = [
-            (10, 180, 160),   # Hextech Teal
-            (200, 170, 100),  # Gold
-            (180, 200, 220),  # Cool White
-            (100, 220, 200),  # Bright Teal
-            (220, 180, 80),   # Warm Gold
-        ]
-        for _ in range(40):  # More particles
-            color = random.choice(particle_colors)
-            self._bg_particles.append({
-                'x': random.uniform(0, 1150),
-                'y': random.uniform(0, 750),
-                'vx': random.uniform(-0.3, 0.3),
-                'vy': random.uniform(-0.5, 0.15),
-                'size': random.uniform(1.5, 4),
-                'alpha': random.uniform(0.3, 0.7),
-                'color': color,
-                'trail': [],  # Store previous positions for trail effect
-                'is_comet': random.random() < 0.15,  # 15% are larger comets
-            })
         
-        # Energy Wave Ripples
-        self._energy_waves = []  # List of {cx, cy, radius, alpha, max_radius}
+        # Volumetric Nebula Data
+        self._nebula_blobs = []
+        for _ in range(4):
+            self._nebula_blobs.append({
+                'x': random.uniform(0.1, 0.9),
+                'y': random.uniform(0.1, 0.9),
+                'vx': random.uniform(-0.0005, 0.0005),
+                'vy': random.uniform(-0.0005, 0.0005),
+                'r': random.uniform(0.5, 0.8),
+                'color': random.choice([THEME['void_purple'], THEME['accent_blue'], THEME['radiant_gold'], "#003366"])
+            })
         
         # Rotating Border Phase
         self._border_rotation = 0.0
@@ -161,53 +148,17 @@ class TitanOverlay(QMainWindow):
         self._ambient_timer.start()
     
     def _tick_ambient(self):
-        """Update ambient background animation."""
-        self._ambient_phase += 0.025
-        self._border_rotation += 0.8  # Degrees per frame
-        if self._border_rotation >= 360:
-            self._border_rotation = 0
-            
-        w, h = self.width(), self.height()
+        """Update ambient background logic."""
+        self._ambient_phase += 0.02
         
-        for p in self._bg_particles:
-            # Store trail position before moving
-            if p.get('is_comet') or p['size'] > 2.5:
-                p['trail'].append((p['x'], p['y']))
-                if len(p['trail']) > 8:  # Keep last 8 positions
-                    p['trail'].pop(0)
-            
-            p['x'] += p['vx']
-            p['y'] += p['vy']
-            
-            # Wrap around
-            if p['x'] < 0: p['x'] = w; p['trail'] = []
-            if p['x'] > w: p['x'] = 0; p['trail'] = []
-            if p['y'] < 0: p['y'] = h; p['trail'] = []
-            if p['y'] > h: p['y'] = 0; p['trail'] = []
-        
-        # Update energy waves
-        new_waves = []
-        for wave in self._energy_waves:
-            wave['radius'] += 4  # Expand speed
-            wave['alpha'] -= 0.02  # Fade speed
-            if wave['alpha'] > 0 and wave['radius'] < wave['max_radius']:
-                new_waves.append(wave)
-        self._energy_waves = new_waves
-        
+        # Drift Nebula Blobs
+        for b in self._nebula_blobs:
+             b['x'] += b['vx']
+             b['y'] += b['vy']
+             if b['x'] < -0.2 or b['x'] > 1.2: b['vx'] *= -1
+             if b['y'] < -0.2 or b['y'] > 1.2: b['vy'] *= -1
+             
         self.update()
-    
-    def spawn_energy_wave(self, cx=None, cy=None):
-        """Spawn a new energy wave ripple from the given center."""
-        if cx is None:
-            cx = self.width() / 2
-        if cy is None:
-            cy = self.height() / 2
-        self._energy_waves.append({
-            'cx': cx, 'cy': cy,
-            'radius': 10,
-            'alpha': 0.8,
-            'max_radius': max(self.width(), self.height()) * 0.6
-        })
     
     @pyqtProperty(float)
     def flash_opacity(self):
@@ -327,30 +278,38 @@ class TitanOverlay(QMainWindow):
         cx, cy = w / 2, h / 2
         radius = 16
         
-        # === 1. DEEP VOID BACKGROUND ===
-        bg_color = QColor(1, 10, 19) # Deepest Blue
-        painter.fillRect(rect, bg_color)
+        # === 1. DEEP VOID BACKGROUND (Radial Depth) ===
+        # Deep space feel that gets darker at the edges
+        bg_grad = QRadialGradient(cx, cy, w * 0.8)
+        bg_grad.setColorAt(0, QColor(8, 15, 25))   # Center: Deep Navy
+        bg_grad.setColorAt(1, QColor(THEME['bg_main'])) # Edges: Void
+        painter.fillRect(rect, bg_grad)
         
-        # === 2. DEMACIAN ATMOSPHERE (Godrays & Radiance) ===
-        # Top-Center Godray (Holy Light)
-        godray_grad = QRadialGradient(cx, -h * 0.2, h * 1.2)
-        godray_grad.setColorAt(0, QColor(20, 40, 80, 100)) # Royal Blue Glow
-        godray_grad.setColorAt(0.5, QColor(10, 20, 40, 50))
-        godray_grad.setColorAt(1, QColor(0, 0, 0, 0))
+        # === 1.b. LIVING NEBULA (Volumetric Drift & Parallax) ===
+        cursor_pos = self.mapFromGlobal(self.cursor().pos())
+        mx = cursor_pos.x() / w if w > 0 else 0.5
+        my = cursor_pos.y() / h if h > 0 else 0.5
         
-        painter.setBrush(QBrush(godray_grad))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRect(rect)
+        for i, b in enumerate(self._nebula_blobs):
+            # Calculate parallax offset based on depth index `i`
+            px = b['x'] * w + (0.5 - mx) * (60 * (i + 1))
+            py = b['y'] * h + (0.5 - my) * (60 * (i + 1))
+            pr = b['r'] * w
+            
+            nebula_grad = QRadialGradient(px, py, pr)
+            c = QColor(b['color'])
+            # Soft pulsing alpha
+            base_alpha = 12 + 6 * math.sin(self._ambient_phase + i)
+            c.setAlpha(int(base_alpha))
+            nebula_grad.setColorAt(0, c)
+            nebula_grad.setColorAt(1, QColor(0, 0, 0, 0))
+            
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.setBrush(QBrush(nebula_grad))
+            painter.drawRect(rect)
         
-        # Bottom-Up Reflection (Ground glow)
-        ground_grad = QLinearGradient(0, h, 0, h - 150)
-        ground_grad.setColorAt(0, QColor(30, 30, 60, 80)) # Dark Blue/Navy
-        ground_grad.setColorAt(1, QColor(0, 0, 0, 0))
-        painter.setBrush(QBrush(ground_grad))
-        painter.drawRect(rect)
-        
-        # === 3. VIGNETTE (Soft Royal Fade) ===
-        vig_color = QColor(2, 5, 12, 180) # Very Dark Navy
+        # === 2. VIGNETTE (Soft Royal Fade) ===
+        vig_color = QColor(2, 4, 10, 200) # Deep dark shadow
         
         # Top gradient
         v_top = QLinearGradient(0, 0, 0, h * 0.15)
@@ -364,155 +323,21 @@ class TitanOverlay(QMainWindow):
         v_bot.setColorAt(1, QColor(0,0,0,0))
         painter.fillRect(0, int(h*0.85), w, int(h*0.15), v_bot)
         
-        # === ENERGY RIPPLES -> RADIANT PULSE RINGS (Gold/White) ===
-        for wave in self._energy_waves:
-            alpha = int(255 * wave['alpha'] * 0.2)
-            # Gold/White rings
-            wave_color = QColor(255, 250, 220, alpha)
-            pen = QPen(wave_color, 1.5)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            
-            # Perfect Circles for "Divine" look (instead of Hexagons)
-            r = wave['radius']
-            painter.drawEllipse(QPointF(wave['cx'], wave['cy']), r, r)
-            
-            if r > 20:
-                inner_alpha = int(255 * wave['alpha'] * 0.1)
-                painter.setPen(QPen(QColor(100, 200, 255, inner_alpha), 1))
-                painter.drawEllipse(QPointF(wave['cx'], wave['cy']), r * 0.8, r * 0.8)
+        # === 3. SLEEK OUTER GLASS BORDER ===
+        frame_rect = rect.adjusted(1, 1, -1, -1)
         
-        # === AMBIENT PARTICLES WITH TRAILS ===
-        for p in self._bg_particles:
-            color = p.get('color', (10, 180, 160))
-            base_alpha = int(255 * p['alpha'] * (0.5 + 0.5 * math.sin(self._ambient_phase + p['x'] / 80)))
-            
-            # Draw trail first (behind particle)
-            trail = p.get('trail', [])
-            if len(trail) > 1:
-                for i, (tx, ty) in enumerate(trail):
-                    trail_alpha = int(base_alpha * (i / len(trail)) * 0.5)
-                    trail_size = p['size'] * (0.3 + 0.5 * (i / len(trail)))
-                    painter.setPen(Qt.PenStyle.NoPen)
-                    painter.setBrush(QColor(color[0], color[1], color[2], trail_alpha))
-                    painter.drawEllipse(QPointF(tx, ty), trail_size, trail_size)
-            
-            # Draw main particle
-            particle_color = QColor(color[0], color[1], color[2], base_alpha)
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(particle_color)
-            size = p['size'] * 1.5 if p.get('is_comet') else p['size']
-            painter.drawEllipse(QPointF(p['x'], p['y']), size, size)
-            
-            # Bright core for comets
-            if p.get('is_comet'):
-                painter.setBrush(QColor(255, 255, 255, int(base_alpha * 0.8)))
-                painter.drawEllipse(QPointF(p['x'], p['y']), size * 0.4, size * 0.4)
-        
-        # === ROTATING CONICAL GRADIENT BORDER ===
-        border_pulse = 0.6 + 0.4 * math.sin(self._ambient_phase * 0.8)
-        
-        # Outer glow layer
-        for i, thickness in enumerate([6, 3]):
-            alpha = int(30 * border_pulse) if i == 0 else int(80 * border_pulse)
-            glow_color = QColor(10, 180, 160, alpha)
-            pen = QPen(glow_color, thickness)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), radius, radius)
-        
-        # === DEMACIAN BORDER (DOUBLE GOLD PLATE) ===
-        # 1. Outer Frame (Dark Bronze/Gold, Thicker)
-        outer_rect = rect.adjusted(4, 4, -4, -4)
-        
-        # Metallic Gradient for Outer Frame
-        outer_grad = QLinearGradient(0, 0, w, h)
-        outer_grad.setColorAt(0.0, QColor("#504020")) # Dark Bronze
-        outer_grad.setColorAt(0.4, QColor("#997530")) # Mid Gold
-        outer_grad.setColorAt(0.5, QColor("#F0E6D2")) # Shine
-        outer_grad.setColorAt(0.6, QColor("#997530")) 
-        outer_grad.setColorAt(1.0, QColor("#504020"))
+        # Very subtle inner shimmer
+        pulse = 0.5 + 0.5 * math.sin(self._ambient_phase * 1.5)
+        shimmer_c = QColor(THEME['border_active'])
+        shimmer_c.setAlpha(int(30 + 30 * pulse))
         
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QBrush(outer_grad), 3)) 
-        painter.drawRoundedRect(outer_rect, radius, radius)
+        painter.setPen(QPen(shimmer_c, 1))
+        painter.drawRoundedRect(frame_rect, radius, radius)
         
-        # 2. Inner Frame (Bright Polished Gold, Thinner)
-        # Gap of 6px
-        inner_rect = outer_rect.adjusted(6, 6, -6, -6)
-        
-        # Bright Gold Gradient
-        inner_grad = QLinearGradient(w, 0, 0, h) # Opposing angle
-        inner_grad.setColorAt(0.0, QColor("#D4AF37"))
-        inner_grad.setColorAt(0.5, QColor("#FFFFFF")) # White Hot Shine
-        inner_grad.setColorAt(1.0, QColor("#D4AF37"))
-        
-        painter.setPen(QPen(QBrush(inner_grad), 1.5))
-        painter.drawRoundedRect(inner_rect, radius-4, radius-4)
-        
-        # 3. Corner Brackets (Connecting the two frames)
-        # We draw L-shapes at the corners that bridge the gap
-        bracket_len = 25
-        bracket_c = QColor("#D4AF37") # Pure Gold
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(bracket_c)
-        
-        # Helper to draw L-shape
-        def draw_corner(cx, cy, rotation):
-            painter.save()
-            painter.translate(cx, cy)
-            painter.rotate(rotation)
-            # Draw L-shape connecting outer (0,0) towards inner
-            # Simple thick bracket style
-            path = QPainterPath()
-            path.moveTo(0, 0)
-            path.lineTo(bracket_len, 0)
-            path.lineTo(bracket_len, 4) # Thickness
-            path.lineTo(4, 4)
-            path.lineTo(4, bracket_len)
-            path.lineTo(0, bracket_len)
-            path.closeSubpath()
-            painter.drawPath(path)
-            painter.restore()
-            
-        # Top-Left
-        draw_corner(outer_rect.left()-1, outer_rect.top()-1, 0)
-        # Top-Right
-        draw_corner(outer_rect.right()+1, outer_rect.top()-1, 90)
-        # Bottom-Right
-        draw_corner(outer_rect.right()+1, outer_rect.bottom()+1, 180)
-        # Bottom-Left
-        draw_corner(outer_rect.left()-1, outer_rect.bottom()+1, 270)
-        
-        # 4. "Breathing" Light in the Gap (Optional subtle pulse)
-        pulse = 0.5 + 0.5 * math.sin(self._ambient_phase * 2)
-        if pulse > 0.01:
-            glow_c = QColor(THEME['accent_blue'])
-            glow_c.setAlpha(int(30 * pulse)) # Very subtle
-            painter.setPen(QPen(glow_c, 4))
-            gap_rect = outer_rect.adjusted(3,3,-3,-3)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            painter.drawRoundedRect(gap_rect, radius-2, radius-2)
-
-        # Corner accent diamonds (Fixed)
-        accent_alpha = int(200 + 55 * border_pulse)
-        accent_color = QColor(255, 255, 255, accent_alpha) # White diamonds
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(accent_color)
-        
-        # Top-left corner accent
-        painter.save()
-        painter.translate(12, 12)
-        painter.rotate(45)
-        painter.drawRect(-3, -3, 6, 6)
-        painter.restore()
-        
-        # Bottom-right corner accent
-        painter.save()
-        painter.translate(w - 12, h - 12)
-        painter.rotate(45)
-        painter.drawRect(-3, -3, 6, 6)
-        painter.restore()
+        # Thicker structural border in dark grey
+        painter.setPen(QPen(QColor(THEME['border_norm']), 2))
+        painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), radius, radius)
         
         # === FLASH OVERLAY (Radial Burst) ===
         if self._flash_opacity > 0.01:
@@ -535,17 +360,11 @@ class TitanOverlay(QMainWindow):
             painter.drawRoundedRect(rect, radius, radius)
     
     def _trigger_flash(self):
-        """Trigger the lock-in flash animation with energy wave burst."""
+        """Trigger the lock-in flash animation smoothly."""
         self.anim_flash.stop()
         self.anim_flash.setStartValue(1.0)
         self.anim_flash.setEndValue(0.0)
         self.anim_flash.start()
-        
-        # Spawn multiple energy waves for dramatic effect
-        cx, cy = self.width() / 2, self.height() / 2
-        self.spawn_energy_wave(cx, cy)
-        QTimer.singleShot(100, lambda: self.spawn_energy_wave(cx, cy))
-        QTimer.singleShot(200, lambda: self.spawn_energy_wave(cx, cy))
     
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:

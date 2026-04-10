@@ -1,6 +1,7 @@
 
 import torch
 import time
+import math
 from src.engine.mcts import SpatialMCTS
 
 class DraftStrategist:
@@ -261,24 +262,20 @@ class DraftStrategist:
         # Fallback if local_cell is invalid (e.g. spectator?)
         if target_slot < 0 or target_slot > 9:
              target_slot = -1
-             # Try to find first empty slot?
+             # Try to find first empty slot
              for i in range(10):
                  if picks_list[i] == 0:
                      target_slot = i
                      break
 
-                     target_slot = i
-                     break
-
-        # 4. MCTS Inference
-        # Optimized with Base-State Caching
+        # 4. MCTS Inference (Optimized with Base-State Caching)
         
         top_ids = []
         win_prob = 0.5
         top_visits = []
+        sorted_children = []
         
         # Construct Base State Hash (excluding my hover)
-        # We need to treat my slot as 0 for the "Search Base"
         base_picks = list(raw_picks)
         if target_slot != -1 and 0 <= target_slot < 10:
              base_picks[target_slot] = 0
@@ -293,17 +290,12 @@ class DraftStrategist:
         cache_hit = False
         if self.last_base_hash == current_base_hash:
              cache_hit = True
-             # print("[STRATEGIST] Cache Hit! Reusing Search Results.")
              suggestions_cache, top_ids, top_visits = self.last_recs_cache
-        else:
-             # print("[STRATEGIST] Cache Miss. Running MCTS...")
-             pass
         
-        state_tupid = (xp, xt, xb, xm, xmeta, x_times) # Added x_times
+        state_tupid = (xp, xt, xb, xm, xmeta, x_times)
         
         # Always evaluate Dynamic Win Probability for the ACTUAL state (with hover)
-        # This ensures the "Oracle" is responsive even if suggestions are cached.
-        mcts = SpatialMCTS(self.brain.model, self.fe, n_sims=50) # Lightweight instance just for eval if needed
+        mcts = SpatialMCTS(self.brain.model, self.fe, n_sims=50)
         _, current_eval = mcts.evaluate(state_tupid)
         
         if picks_list[target_slot] != 0:
@@ -342,7 +334,6 @@ class DraftStrategist:
                          cid, node = x
                          raw_score = node.visits
                          pts = m_map.get(cid, 0)
-                         import math
                          log_pts = math.log10(pts + 1) 
                          factor = 1.0 + (log_pts * 0.2 * (bias - 1.0))
                          return raw_score * factor
@@ -373,30 +364,7 @@ class DraftStrategist:
              top_ids = [a for a, n in sorted_children[:5]]
              top_visits = [n.visits for a, n in sorted_children[:5]]
              
-             # Cache Update happens after formatting because we want to cache the FORMATTED suggestions logic?
-             # Actually, suggestions formatting depends on `predicted_wr` which comes from NODE data.
-             # If we only cache IDs/Visits, we lose the Node objects.
-             # So we must format suggestions INSIDE the "Miss" block or cache the Nodes?
-             # Node objects are not easily serializable or kept, but we can keep list of (cid, visits, confidence).
-             # Let's keep the `sorted_children` list? No, MCTS tree is large.
-             # Better: Format suggestions NOW and cache the final list.
-             
-        # 5. Format Suggestions (Executed only on Cache Miss or we duplicate logic?)
-        # Logic structure constraint: We need `sorted_children` to format suggestions.
-        # If Cache Hit, we don't have `sorted_children` (unless we cache them).
-        
-        # REFACTOR: Move formatting inside Cache Miss block, and cache the RESULT `suggestions`.
-        
-        if not cache_hit and target_slot != -1:
-             # ... Formatting Logic ...
-             pass 
-             
-        # Wait, I can't easily refactor the whole block with `multi_replace` if I don't replace the whole block.
-        # I will replace lines 238 to 340 (Search Block) entirely.
-
-             
-
-             # --- Formatting Logic Inline ---
+             # --- Format Suggestions & Cache ---
              suggestions = []
              max_v = top_visits[0] if top_visits else 1
              if max_v == 0: max_v = 1
@@ -409,19 +377,19 @@ class DraftStrategist:
                 
                 # Convert Token to Real ID
                 real_id = inv_vocab.get(token_id, 0)
-                cid = real_id # Use Real ID for lookup
+                cid = real_id
                 
                 name = self.dd.get_id_map().get(real_id, f"{real_id}")
                 
                 # Resolve Asset ID (Name Key) using Real ID
-                asset_id = str(real_id) # Default to ID
+                asset_id = str(real_id)
                 for c_key, c_val in self.dd.champions.items():
                      if int(c_val['key']) == real_id:
-                          asset_id = c_key # This IS the Asset Name (e.g. "MissFortune")
+                          asset_id = c_key
                           break
                           
                 # AI Confidence
-                child_node = next((n for a, n in sorted_children if a == cid), None)
+                child_node = next((n for a, n in sorted_children if a == token_id), None)
                 predicted_wr = 0.5
                 if child_node:
                      if child_node.visits > 0:
@@ -430,8 +398,7 @@ class DraftStrategist:
                          predicted_wr = child_node.prior
                 
                 # Stats
-                simulated_team = []
-                current_picks_sim = xp[0].cpu().tolist() # Copy from tensor
+                current_picks_sim = xp[0].cpu().tolist()
                 current_picks_sim[target_slot] = cid
                 
                 team_slice = current_picks_sim[0:5] if (offset == 0) else current_picks_sim[5:10]
@@ -462,19 +429,12 @@ class DraftStrategist:
 
         elif cache_hit:
              suggestions = suggestions_cache
-             # We do NOT update suggestions dynamically (e.g. "delta" might change if win_prob changes significantly?)
-             # Yes, if `win_prob` changes (due to hover), `delta` (suggested_wr - win_prob) changes.
-             # But `suggested_wr` is static for that suggestion in that Base State.
-             # So we should re-calculate `delta`?
-             # `suggestions_cache` has "wr" (absolute). We can update "delta".
-             
+             # Re-calculate delta since win_prob may have changed due to hover
              for r in suggestions:
                   r['delta'] = r['wr'] - (win_prob * 100.0)
         else:
-             # Target slot -1 or something
+             # Target slot -1 or spectator
              suggestions = []
-
-            
         lane_status = f"Lane: {my_pos}" if my_pos else "Observing"
         if enemy_champ > 0:
              ename = self.dd.get_id_map().get(enemy_champ, str(enemy_champ))

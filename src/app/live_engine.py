@@ -27,8 +27,13 @@ def main():
         
         while True:
             try:
-                # Cycle returns: (win_rate, suggestions, status_msg, lane_status, build_data)
-                wr, recs, status, lane, build = engine.cycle()
+                # Cycle returns: (win_rate, suggestions, status_msg, lane_status, build_data, context)
+                res = engine.cycle()
+                if len(res) == 6:
+                    wr, recs, status, lane, build, context = res
+                else:
+                    wr, recs, status, lane, build = res
+                    context = {}
                 
                 # Print Logic
                 if status != last_status:

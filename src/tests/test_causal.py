@@ -56,9 +56,9 @@ def test_causal_masking():
     print(f"Difference in Step 0 Prediction after changing Step 9: {diff}")
     
     if diff < 1e-6:
-        print("✅ SUCCESS: Future does not leak into Past.")
+        print("[SUCCESS]: Future does not leak into Past.")
     else:
-        print("❌ FAILURE: Leaky Attention Detected!")
+        print("[FAILURE]: Leaky Attention Detected!")
         
     # 7. Reverse Check: Change Past
     x_picks_C = x_picks.clone()
@@ -66,16 +66,16 @@ def test_causal_masking():
     
     with torch.no_grad():
         out_C = brain.model(x_picks_C, x_turns.long(), x_bans.long(), x_mast.float(), x_meta.float(), src_mask=causal_mask)
-        pred_C = out_C['policy'][0, 8, :] # Prediction at Step 8
+        pred_C = out_C['policy'][0, 15, :] # Prediction at Time 16 (Pick 6)
         
-    # Compare Out A Step 8 vs Out C Step 8
-    # Step 8 SHOULD see Step 0 change.
-    diff_rev = torch.sum(torch.abs(out_A['policy'][0, 8, :] - pred_C)).item()
-    print(f"Difference in Step 8 Prediction after changing Step 0: {diff_rev}")
+    # Compare Out A Step 15 vs Out C Step 15
+    # Step 15 (Pick 6) SHOULD see Step 0 (Pick 1) change.
+    diff_rev = torch.sum(torch.abs(out_A['policy'][0, 15, :] - pred_C)).item()
+    print(f"Difference in Step 15 Prediction after changing Pick 1: {diff_rev}")
     if diff_rev > 1e-6:
-        print("✅ SUCCESS: Past correctly influences Future.")
+        print("[SUCCESS]: Past correctly influences Future.")
     else:
-        print("❌ FAILURE: Attention seems broken (No dependency).")
+        print("[FAILURE]: Attention seems broken (No dependency).")
 
 if __name__ == "__main__":
     test_causal_masking()

@@ -9,105 +9,10 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QSize, QDateTime, QPoint, QPoin
 from PyQt6.QtGui import QFont, QColor, QLinearGradient, QPalette, QBrush, QPainter, QPen, QRadialGradient, QConicalGradient
 
 # Import Premium Components
-from src.interface.components import AnimatedHexFrame, HexFrame, CardWidget, THEME
+from src.interface.components import GlassPanel, HexFrame, CardWidget, HexButton, THEME
 from src.interface.asset_loader import AssetLoader
 
-class PulseNavButton(QPushButton):
-    """
-    Holographic Navigation Button with Hover Pulse and Active Glow.
-    """
-    def __init__(self, text, parent=None):
-        super().__init__(text, parent)
-        self.setFixedHeight(50)
-        self.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._hover_progress = 0.0
-        self._active = False
-        
-        # Font settings
-        font = QFont(THEME['font_main'], 10, QFont.Weight.Bold)
-        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
-        self.setFont(font)
-        
-        self.anim_hover = QPropertyAnimation(self, b"hover_progress")
-        self.anim_hover.setDuration(300)
-        self.anim_hover.setEasingCurve(QEasingCurve.Type.OutCubic)
-        
-    @pyqtProperty(float)
-    def hover_progress(self):
-        return self._hover_progress
-        
-    @hover_progress.setter
-    def hover_progress(self, val):
-        self._hover_progress = val
-        self.update()
-        
-    def set_active(self, active):
-        self._active = active
-        self.update()
-
-    def enterEvent(self, event):
-        self.anim_hover.stop()
-        self.anim_hover.setStartValue(self._hover_progress)
-        self.anim_hover.setEndValue(1.0)
-        self.anim_hover.start()
-        super().enterEvent(event)
-
-    def leaveEvent(self, event):
-        self.anim_hover.stop()
-        self.anim_hover.setStartValue(self._hover_progress)
-        self.anim_hover.setEndValue(0.0)
-        self.anim_hover.start()
-        super().leaveEvent(event)
-        
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        rect = self.rect()
-        w, h = rect.width(), rect.height()
-        
-        # Background
-        bg_color = QColor(THEME['bg_glass'])
-        border_color = QColor(THEME['border_norm'])
-        text_color = QColor(THEME['text_dim'])
-        
-        if self._active:
-            bg_color = QColor(THEME['bg_glass_dark'])
-            border_color = QColor(THEME['border_active'])
-            text_color = QColor(THEME['border_active'])
-        elif self._hover_progress > 0.01:
-            # Lerp towards hover state
-            text_color = QColor(THEME['text_main'])
-            bg_color = QColor(20, 40, 60, 150)
-            
-        # Draw Background Plate
-        painter.setBrush(bg_color)
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRect(rect)
-        
-        # Draw Border (Left Accent)
-        if self._active:
-            painter.setBrush(QColor(THEME['border_active']))
-            painter.drawRect(0, 0, 4, h)
-            
-            # Glow rect
-            grad = QLinearGradient(0, 0, w, 0)
-            grad.setColorAt(0, QColor(212, 175, 55, 50))
-            grad.setColorAt(1, QColor(0,0,0,0))
-            painter.setBrush(grad)
-            painter.drawRect(4, 0, w, h)
-        
-        if self._hover_progress > 0.01:
-            # Hover Line slide in
-            line_w = w * self._hover_progress
-            painter.setBrush(QColor(THEME['accent_blue']))
-            painter.drawRect(0, h-2, int(line_w), 2)
-            
-        # Draw Text
-        painter.setPen(text_color)
-        # Offset text slightly on hover
-        tx_off = 5 * self._hover_progress
-        painter.drawText(QRectF(20 + tx_off, 0, w-20, h), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text())
+# Obsoleted PulseNavButton in favor of global HexButton.
 
 
 class TimelineItem(QWidget):
@@ -194,17 +99,19 @@ class TimelineItem(QWidget):
         # Panel BG
         bg_c = QColor(THEME['bg_glass'])
         if is_win:
-            bg_c = QColor(10, 200, 185, 20)
+            bg_c = QColor(THEME['success'])
+            bg_c.setAlpha(15)
         else:
-            bg_c = QColor(200, 50, 50, 20)
+            bg_c = QColor(THEME['accent_red'])
+            bg_c.setAlpha(15)
             
         # Hover brightness
         if self._hovered:
-            bg_c.setAlpha(50)
+            bg_c.setAlpha(40)
             
         painter.setBrush(bg_c)
         painter.setPen(QPen(base_color, 1))
-        painter.drawRoundedRect(panel_rect, 6, 6)
+        painter.drawRoundedRect(panel_rect, 4, 4)
         
         # Text
         painter.setPen(QColor(THEME['text_main']))
@@ -242,70 +149,60 @@ class LobbyWindow(QMainWindow):
         super().__init__()
         self.engine = engine
         self.loader = AssetLoader() # For champion icons
+        self.debug_override_tier = None # Init debug state
         
         self.setWindowTitle("Titan AI - Divine Terminal")
         self.resize(1280, 800)
         
-        # Enable Transparent Attributes for particles to look good if we overlaid, 
-        # but pure QMainWindow usually has opaque BG. We will draw BG in paintEvent.
+        # Window Entry Animation
+        self._intro_progress = 0.0
+        self.anim_intro = QPropertyAnimation(self, b"intro_progress")
+        self.anim_intro.setDuration(1200)
+        self.anim_intro.setEasingCurve(QEasingCurve.Type.OutCubic)
         
         # Central Setup
         self.central = QWidget()
         self.setCentralWidget(self.central)
-        self.layout = QHBoxLayout(self.central)
-        self.layout.setContentsMargins(0, 0, 0, 0)
-        self.layout.setSpacing(0)
+        self.layout = QVBoxLayout(self.central)
+        self.layout.setContentsMargins(40, 40, 40, 40)
+        self.layout.setSpacing(20)
         
-        # === 1. LEFT SIDEBAR (Holographic Nav) ===
-        self.sidebar = QWidget()
-        self.sidebar.setFixedWidth(260)
-        self.sidebar.setStyleSheet("background-color: rgba(5, 10, 20, 0.9); border-right: 1px solid #333;")
-        
-        side_layout = QVBoxLayout(self.sidebar)
-        side_layout.setContentsMargins(0, 0, 0, 0)
-        side_layout.setSpacing(0)
+        # === 1. TOP NAVBAR (Floating HUD Dock) ===
+        self.nav_dock = QWidget()
+        self.nav_dock.setFixedHeight(70)
+        nav_layout = QHBoxLayout(self.nav_dock)
+        nav_layout.setContentsMargins(20, 0, 20, 0)
+        nav_layout.setSpacing(30)
         
         # Logo Area
-        logo_box = QFrame()
-        logo_box.setFixedHeight(100)
-        lb_lo = QVBoxLayout(logo_box)
-        lbl_tit = QLabel("TITAN\nPROTOCOL")
-        lbl_tit.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        lbl_tit.setStyleSheet(f"font-family: '{THEME['font_main']}'; font-size: 24px; font-weight: 900; color: {THEME['border_active']}; letter-spacing: 4px;")
-        lb_lo.addWidget(lbl_tit)
-        side_layout.addWidget(logo_box)
+        lbl_tit = QLabel("TITAN PROTOCOL")
+        lbl_tit.setStyleSheet(f"font-family: '{THEME['font_main']}'; font-size: 20px; font-weight: 900; color: {THEME['border_active']}; letter-spacing: 4px;")
+        nav_layout.addWidget(lbl_tit)
+        
+        nav_layout.addStretch()
         
         # Nav Buttons
-        self.btn_prof = PulseNavButton("  COMMANDER")
-        self.btn_prof.clicked.connect(lambda: self.set_page(0))
-        side_layout.addWidget(self.btn_prof)
+        self.btn_prof = HexButton("COMMANDER")
+        self.btn_prof.setFixedWidth(160)
+        self.btn_prof.clicked.connect(lambda: getattr(self, 'set_page', lambda x: None)(0))
+        nav_layout.addWidget(self.btn_prof)
         
-        self.btn_hist = PulseNavButton("  TIMELINE")
-        self.btn_hist.clicked.connect(lambda: self.set_page(1))
-        side_layout.addWidget(self.btn_hist)
+        self.btn_hist = HexButton("TIMELINE")
+        self.btn_hist.setFixedWidth(160)
+        self.btn_hist.clicked.connect(lambda: getattr(self, 'set_page', lambda x: None)(1))
+        nav_layout.addWidget(self.btn_hist)
         
-        self.btn_sett = PulseNavButton("  CONFIG")
-        self.btn_sett.clicked.connect(lambda: self.set_page(2))
-        side_layout.addWidget(self.btn_sett)
+        self.btn_sett = HexButton("SYSTEM CONFIG")
+        self.btn_sett.setFixedWidth(160)
+        self.btn_sett.clicked.connect(lambda: getattr(self, 'set_page', lambda x: None)(2))
+        nav_layout.addWidget(self.btn_sett)
         
-        side_layout.addStretch()
-        
-        # Status Footer
-        ft_box = QFrame()
-        ft_box.setFixedHeight(60)
-        ft_lo = QVBoxLayout(ft_box)
-        self.lbl_status = QLabel("SYSTEM ONLINE")
-        self.lbl_status.setStyleSheet("color: #0AC8B9; font-family: 'Consolas'; font-size: 10px; letter-spacing: 1px;")
-        self.lbl_status.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        ft_lo.addWidget(self.lbl_status)
-        side_layout.addWidget(ft_box)
-        
-        self.layout.addWidget(self.sidebar)
+        self.layout.addWidget(self.nav_dock)
         
         # === 2. MAIN CONTENT AREA (Transparent for Background) ===
         self.content_area = QWidget()
         self.content_layout = QVBoxLayout(self.content_area)
-        self.content_layout.setContentsMargins(40, 40, 40, 40)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
         
         self.stack = QTabWidget()
         self.stack.setStyleSheet("QTabWidget::pane { border: none; background: transparent; } QTabWidget { background: transparent; }")
@@ -330,23 +227,11 @@ class LobbyWindow(QMainWindow):
         
         # === 3. BACKGROUND ANIMATION SYSTEM ===
         self._ambient_phase = 0.0
-        self._particles = []
-        for _ in range(50):
-            self._particles.append({
-                'x': random.uniform(0, 1280),
-                'y': random.uniform(0, 800),
-                'vx': random.uniform(-0.2, 0.2),
-                'vy': random.uniform(-0.5, -0.1), # Upward drift
-                'size': random.uniform(1, 3.5),
-                'alpha': random.uniform(0.2, 0.6),
-                'color': random.choice([(10, 180, 160), (200, 170, 100), (180, 200, 250)])
-            })
             
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.game_loop)
-        self.timer.start(16) # 60 FPS
+        self.timer.start(32) # Lower update rate for smooth background drift (no particles)
         
-        # Sync Timer (LCU Data)
         self.sync_timer = QTimer(self)
         self.sync_timer.timeout.connect(self.sync_data)
         self.sync_timer.start(3000)
@@ -354,29 +239,40 @@ class LobbyWindow(QMainWindow):
         self.set_page(0)
         QTimer.singleShot(500, self.sync_data)
         
+        # Run Intro Animation
+        self.anim_intro.setStartValue(0.0)
+        self.anim_intro.setEndValue(1.0)
+        self.anim_intro.start()
+        
+    @pyqtProperty(float)
+    def intro_progress(self):
+        return self._intro_progress
+        
+    @intro_progress.setter
+    def intro_progress(self, val):
+        self._intro_progress = val
+        self.update()
+        # Slide content area up
+        offset = int(40 * (1.0 - val))
+        self.central.setFixedSize(self.width(), self.height())
+        self.central.move(0, offset)
+        self.central.setWindowOpacity(val)
+        
     def set_page(self, idx):
         self.stack.setCurrentIndex(idx)
-        # Update Nav Buttons
+        # Highlight the active TacticalButton by adjusting color keys.
         btns = [self.btn_prof, self.btn_hist, self.btn_sett]
         for i, b in enumerate(btns):
-            b.set_active(i == idx)
+            if i == idx:
+                b.color_key = 'accent_blue'
+                b.update()
+            else:
+                b.color_key = 'border_active'
+                b.update()
             
     def game_loop(self):
-        """Update animations (Background, Particles)."""
-        self._ambient_phase += 0.01
-        
-        w, h = self.width(), self.height()
-        
-        # Particle Physics
-        for p in self._particles:
-            p['x'] += p['vx']
-            p['y'] += p['vy']
-            
-            # Wrap
-            if p['y'] < -10: p['y'] = h + 10; p['x'] = random.uniform(0, w)
-            if p['x'] < -10: p['x'] = w + 10
-            if p['x'] > w + 10: p['x'] = -10
-            
+        """Update animations (Background drift)."""
+        self._ambient_phase += 0.005
         self.update() # Triggers paintEvent
        
 
@@ -389,37 +285,28 @@ class LobbyWindow(QMainWindow):
             self.lbl_summ_name.setText(data['name'].upper())
             self.lbl_tag.setText(f"#{data['tag']}")
             
-            # Formatting Rank
-            t = data['tier_solo']
-            c = "#F0E6D2"
-            if "EMERALD" in t: c = "#0AC8B9"
-            elif "DIAMOND" in t: c = "#5765F2"
-            elif "MASTER" in t: c = "#C855F2"
-            elif "GRAND" in t: c = "#C83232"
-            elif "CHALLENGER" in t: c = "#F0E6D2"
-            
-            # Update Armor Color
-            self.rank_frame.color_key = c # Hacky, but assuming HexFrame reads color? No, we need to subclass or methods.
-            # AnimatedHexFrame uses 'active=True' to pulse. 
-            # We can override paintEvent via style or rebuild. 
-            # Actually AnimatedHexFrame hardcodes gold. 
-            # For now let's just update the TEXT color which is effective enough combined with gold frame.
-            
-            rank_str = data.get('rank_solo')
-            # Fix for "None" or empty rank
-            if not rank_str or "NONE" in str(rank_str).upper() or "UNRANKED" in str(rank_str).upper() or rank_str.strip() == "":
-                self.lbl_rank_main.setText("UNRANKED")
-                self.lbl_rank_sub.setText("PROVISIONAL")
+            # Formatting Rank - Check Debug Override
+            if self.debug_override_tier:
+                # In debug mode, we skip overwriting the rank frame
+                pass 
             else:
-                parts = rank_str.split(' ') # e.g. EMERALD IV (44 LP)
-                if len(parts) >= 2:
-                    self.lbl_rank_main.setText(f"{parts[0]} {parts[1]}")
-                    self.lbl_rank_sub.setText(' '.join(parts[2:]))
+                # Normal Live Data Flow
+                t = data.get('tier_solo', 'UNRANKED')
+                
+                rank_str = data.get('rank_solo')
+                # Fix for "None" or empty rank
+                r_text = ""
+                if not rank_str or "NONE" in str(rank_str).upper() or "UNRANKED" in str(rank_str).upper() or rank_str.strip() == "":
+                     t = "UNRANKED"
+                     r_text = "PROVISIONAL"
                 else:
-                    self.lbl_rank_main.setText(rank_str)
-                    self.lbl_rank_sub.setText("")
-            
-            self.lbl_rank_main.setStyleSheet(f"font-size: 36px; font-weight: 900; color: {c}; letter-spacing: 2px; margin-top: 5px;")
+                    parts = rank_str.split(' ') 
+                    if len(parts) >= 2:
+                        r_text = ' '.join(parts[2:]) # LP part
+                    else:
+                        r_text = ""
+                
+                self.update_rank_display(t, r_text)
             
             # Update Top Mastery
             top_m = data.get('top_mastery', [])
@@ -451,64 +338,68 @@ class LobbyWindow(QMainWindow):
 
     def init_profile(self):
         layout = QVBoxLayout(self.page_prof)
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
-        # --- TOP ROW: IDENTITY & RANKED ARMOR ---
+        # --- TOP ROW: IDENTITY & RANKED TYPOGRAPHY ---
         top_row = QHBoxLayout()
-        top_row.setSpacing(40)
+        top_row.setSpacing(60)
+        top_row.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         # 1. Identity Box
-        id_frame = HexFrame() 
-        id_frame.setFixedSize(350, 200)
+        id_frame = GlassPanel() 
+        id_frame.setFixedSize(380, 220)
         id_lo = QVBoxLayout(id_frame)
-        id_lo.setContentsMargins(30, 30, 30, 30)
+        id_lo.setContentsMargins(40, 40, 40, 40)
         
         lbl_head = QLabel("COMMANDER")
-        lbl_head.setStyleSheet(f"color: {THEME['border_active']}; font-size: 10px; font-weight: bold; letter-spacing: 2px;")
+        lbl_head.setStyleSheet(f"color: {THEME['text_dim']}; font-size: 10px; font-weight: bold; letter-spacing: 3px;")
         id_lo.addWidget(lbl_head)
         
         self.lbl_summ_name = QLabel("LOADING...")
-        self.lbl_summ_name.setStyleSheet(f"font-size: 32px; font-weight: 800; color: {THEME['text_main']};")
+        self.lbl_summ_name.setStyleSheet(f"font-size: 36px; font-weight: 900; color: {THEME['text_main']}; letter-spacing: 1px;")
         id_lo.addWidget(self.lbl_summ_name)
         
         self.lbl_tag = QLabel("#TAG")
-        self.lbl_tag.setStyleSheet(f"font-size: 18px; color: {THEME['text_dim']}; font-weight: bold;")
+        self.lbl_tag.setStyleSheet(f"font-size: 18px; color: {THEME['border_active']}; font-weight: bold;")
         id_lo.addWidget(self.lbl_tag)
         id_lo.addStretch()
         
         top_row.addWidget(id_frame)
         
-        # 2. Ranked Armor (Animated)
-        # Using AnimatedHexFrame for the "Armor" feel
-        self.rank_frame = AnimatedHexFrame()
-        self.rank_frame.setFixedSize(400, 200)
+        # 2. Ranked Typography Box (Monolithic)
+        self.rank_frame = GlassPanel()
+        self.rank_frame.setFixedSize(450, 220)
         r_lo = QVBoxLayout(self.rank_frame)
-        r_lo.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        r_lo.setContentsMargins(40, 40, 40, 40)
+        r_lo.setAlignment(Qt.AlignmentFlag.AlignTop) # Align to top for cleaner layout
         
         lbl_rt = QLabel("SOLO / DUO QUEUE")
-        lbl_rt.setStyleSheet(f"color: {THEME['border_active']}; font-size: 12px; font-weight: bold; letter-spacing: 3px;")
+        lbl_rt.setStyleSheet(f"color: {THEME['text_dim']}; font-size: 10px; font-weight: bold; letter-spacing: 4px;")
         r_lo.addWidget(lbl_rt)
+        r_lo.addSpacing(10)
         
         self.lbl_rank_main = QLabel("UNRANKED")
         r_lo.addWidget(self.lbl_rank_main)
         
         self.lbl_rank_sub = QLabel("")
-        self.lbl_rank_sub.setStyleSheet(f"color: {THEME['text_main']}; font-size: 14px; font-weight: bold;")
+        self.lbl_rank_sub.setStyleSheet(f"color: {THEME['text_dim']}; font-size: 14px; font-weight: bold; letter-spacing: 1.5px;")
         r_lo.addWidget(self.lbl_rank_sub)
+        r_lo.addStretch()
         
         top_row.addWidget(self.rank_frame)
-        top_row.addStretch()
         
         layout.addLayout(top_row)
-        layout.addSpacing(30)
+        layout.addSpacing(50)
         
         # --- MASTERY SHOWCASE (3 Cards) ---
         m_label = QLabel("MASTERY SHOWCASE")
-        m_label.setStyleSheet(f"color: {THEME['border_active']}; font-size: 14px; font-weight: bold; letter-spacing: 2px; padding-left: 10px;")
+        m_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        m_label.setStyleSheet(f"color: {THEME['border_glow']}; font-size: 16px; font-weight: 800; letter-spacing: 4px; padding-bottom: 20px;")
         layout.addWidget(m_label)
         
         cards_layout = QHBoxLayout()
-        cards_layout.setSpacing(20)
-        cards_layout.setAlignment(Qt.AlignmentFlag.AlignLeft)
+        cards_layout.setSpacing(30)
+        cards_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
         
         self.mastery_cards = []
         for i in range(3):
@@ -520,7 +411,63 @@ class LobbyWindow(QMainWindow):
             
         layout.addLayout(cards_layout)
         
+        # --- DEBUG: RANK SELECTOR ---
+        debug_lo = QHBoxLayout()
+        debug_lo.addStretch()
+        lbl_dbg = QLabel("DEBUG VISUALS:")
+        lbl_dbg.setStyleSheet(f"color: {THEME['text_dim']}; font-size: 10px; font-weight: bold;")
+        debug_lo.addWidget(lbl_dbg)
+        
+        self.combo_debug_rank = QComboBox()
+        self.combo_debug_rank.addItems(["AUTO (LIVE DATA)", "IRON", "BRONZE", "SILVER", "GOLD", "PLATINUM", "EMERALD", "DIAMOND", "MASTER", "GRANDMASTER", "CHALLENGER"])
+        self.combo_debug_rank.setFixedWidth(150)
+        self.combo_debug_rank.setStyleSheet(f"""
+            QComboBox {{ 
+                background: {THEME['bg_glass']}; 
+                color: {THEME['accent_blue']}; 
+                border: 1px solid {THEME['border_norm']};
+                padding: 5px;
+            }}
+            QComboBox:hover {{ border: 1px solid {THEME['border_active']}; }}
+        """)
+        self.combo_debug_rank.currentTextChanged.connect(self.on_debug_rank_changed)
+        debug_lo.addWidget(self.combo_debug_rank)
+        
+        layout.addSpacing(10)
+        layout.addLayout(debug_lo)
+        
         layout.addStretch()
+
+    def on_debug_rank_changed(self, text):
+        if "AUTO" in text:
+            self.debug_override_tier = None
+            self.sync_data() # Force immediate resync
+        else:
+            self.debug_override_tier = text
+            self.update_rank_display(text, "DEBUG MODE")
+
+    # Refactored update logic to be reusable
+    def update_rank_display(self, tier, rank_text):
+         # Update Armor Style & Text Color
+        if hasattr(self.rank_frame, 'set_tier'):
+            self.rank_frame.set_tier(tier)
+        
+        t_str = str(tier).upper()
+        c = "#F0E6D2" # Default Gold/Bone
+        if "EMERALD" in t_str: c = "#0AC8B9"
+        elif "DIAMOND" in t_str: c = "#5765F2"
+        elif "MASTER" in t_str: c = "#C855F2"
+        elif "GRAND" in t_str: c = "#C83232"
+        elif "CHALLENGER" in t_str: c = "#F0E6D2" 
+        elif "PLATINUM" in t_str: c = "#4FB9B3"
+        elif "GOLD" in t_str: c = "#D4AF37"
+        elif "SILVER" in t_str: c = "#9EBAC4"
+        elif "BRONZE" in t_str: c = "#CD8032"
+        elif "IRON" in t_str: c = "#727272"
+        
+        self.lbl_rank_main.setText(t_str)
+        self.lbl_rank_sub.setText(rank_text)
+        self.lbl_rank_main.setStyleSheet(f"font-size: 36px; font-weight: 900; color: {c}; letter-spacing: 2px; margin-top: 5px;")
 
     def init_history(self):
         layout = QVBoxLayout(self.page_hist)
@@ -576,7 +523,8 @@ class LobbyWindow(QMainWindow):
 
     def paintEvent(self, event):
         """
-        Draw the Divine Void background.
+        Draw the sleek Obsidian Grid background gradient.
+        No godrays, no messy particles.
         """
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
@@ -584,38 +532,40 @@ class LobbyWindow(QMainWindow):
         rect = self.rect()
         w, h = rect.width(), rect.height()
         
+        intro_alpha = getattr(self, '_intro_progress', 1.0)
+        
         # 1. Deep Void BG
         grad = QLinearGradient(0, 0, 0, h)
-        grad.setColorAt(0, QColor(2, 5, 10))
-        grad.setColorAt(1, QColor(5, 10, 20))
+        main_c = QColor(THEME['bg_main'])
+        
+        top_c = main_c.lighter(120)
+        top_c.setAlpha(int(255 * intro_alpha))
+        main_c.setAlpha(int(255 * intro_alpha))
+        
+        grad.setColorAt(0, top_c)
+        grad.setColorAt(1, main_c)
         painter.fillRect(rect, grad)
         
-        # 2. Godrays
-        cx = w * 0.7
-        painter.setPen(Qt.PenStyle.NoPen)
-        
-        # Ray 1
-        ray1 = QRadialGradient(cx, -100, h)
-        ray1.setColorAt(0, QColor(20, 40, 80, 80))
-        ray1.setColorAt(1, QColor(0,0,0,0))
-        painter.setBrush(ray1)
-        painter.drawRect(rect)
-        
-        # 3. Ambient Particles
-        for p in self._particles:
-            alpha = int(255 * p['alpha'])
-            c = p['color']
-            painter.setBrush(QColor(c[0], c[1], c[2], alpha))
-            painter.drawEllipse(QPointF(p['x'], p['y']), p['size'], p['size'])
+        # 2. Sleek Tactical Grid Overlay Minimal
+        if intro_alpha > 0.1:
+            painter.setPen(QPen(QColor(255, 255, 255, int(5 * intro_alpha)), 1))
+            grid_spacing = 80
             
-        # 4. Vignette
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        pen_vig = QPen()
-        # Complex to do smooth vignette with rects, skip for performance or use image if needed.
-        # Simple corner gradients:
-        
-        # Bottom Fade
-        bot_grad = QLinearGradient(0, h, 0, h-200)
-        bot_grad.setColorAt(0, QColor(0,0,0,200))
-        bot_grad.setColorAt(1, QColor(0,0,0,0))
-        painter.fillRect(0, h-200, w, 200, bot_grad)
+            # Drift grid slowly based on ambient phase
+            shift_x = (self._ambient_phase * 150) % grid_spacing
+            
+            # Vertical lines
+            for x in range(int(-shift_x), w, grid_spacing):
+                painter.drawLine(x, 0, x, h)
+                
+            # Horizontal lines
+            for y in range(0, h, grid_spacing):
+                painter.drawLine(0, y, w, y)
+                
+        # 3. Soft Top Edge Glow (Minimalist lighting)
+        glow_grad = QLinearGradient(0, 0, 0, 80)
+        c_glow = QColor(THEME['border_active'])
+        c_glow.setAlpha(int(15 * intro_alpha))
+        glow_grad.setColorAt(0, c_glow)
+        glow_grad.setColorAt(1, QColor(0,0,0,0))
+        painter.fillRect(0, 0, w, 80, glow_grad)

@@ -31,7 +31,6 @@ Desktop.ini
 
 # --- JetBrains ---
 .idea/
-*.iml
 
 # --- Project Specific Virtual Env (Root) ---
 Lib/
@@ -43,8 +42,6 @@ include/
 # --- Large Data Files & ML Artifacts ---
 *.db
 checkpoints/
-src/tools/brain.db
-src/engine/brain_v2.db
 
 # --- Data Directory (Keep scripts, ignore data) ---
 src/data/matches/
@@ -58,9 +55,9 @@ src/interface/assets/
 
 # --- Logs & Backups ---
 *.log
+error_log.txt
 _BACKUP*/
 _LEGACY_BACKUP*/
 
-# --- Custom Ignores ---
-# overlay/
-idea/
+# --- Temp Output ---
+*.json.tmp

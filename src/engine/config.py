@@ -1,7 +1,10 @@
 import json
 import os
 
-CONFIG_PATH = "config.json"
+# Resolve to project root (config.py is in src/engine/, config.json is at root)
+_ENGINE_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(_ENGINE_DIR))
+CONFIG_PATH = os.path.join(_PROJECT_ROOT, "config.json")
 
 DEFAULT_CONFIG = {
     "theme": "Pro Esports",

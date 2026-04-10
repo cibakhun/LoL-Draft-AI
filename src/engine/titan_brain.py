@@ -4,13 +4,10 @@ import torch.optim as optim
 import numpy as np
 import os
 
-try:
-    HAS_TORCH = True
-except ImportError:
-    HAS_TORCH = False
+# Central constant — must match training checkpoint
+VOCAB_SIZE = 3000
 
-if HAS_TORCH:
-    class TitanNet(nn.Module):
+class TitanNet(nn.Module):
         """
         TitanNet V3.5: The God Schema Model (Audited).
         A Multi-Input Transformer optimized for "Big Data" draft emulation.
@@ -32,7 +29,7 @@ if HAS_TORCH:
         - Transformer Backbone (Encoder)
         - Heads: Policy (Next Pick), Value (Win Probability)
         """
-        def __init__(self, vocab_size=2000, d_model=256, nhead=8, num_layers=6):
+        def __init__(self, vocab_size=VOCAB_SIZE, d_model=256, nhead=8, num_layers=6):
             super(TitanNet, self).__init__()
             
             self.d_model = d_model
@@ -196,7 +193,8 @@ if HAS_TORCH:
                  T_i = sorted_times.unsqueeze(2) 
                  T_j = sorted_times.unsqueeze(1) 
                  causal_mask = (T_j > T_i)
-                 src_mask = causal_mask
+                 # Expand dimension 0 to account for nhead=8 in TransformerEncoder
+                 src_mask = causal_mask.repeat_interleave(8, dim=0)
 
             # --- Padding Mask (Reordered) ---
             mask_meta = torch.zeros((B, 1), dtype=torch.bool, device=device)
@@ -230,9 +228,9 @@ class TitanBrain:
         self.model = None
         self.model_path = model_path
         self.optimizer = None
+        self.loaded_successfully = False
         
-    def initialize(self, vocab_size=2000):
-        if not HAS_TORCH: return
+    def initialize(self, vocab_size=VOCAB_SIZE):
         print(f"[TITAN] Initializing V3 Architecture... Device: {self.device}")
         self.model = TitanNet(vocab_size=vocab_size).to(self.device)
         self.optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, weight_decay=1e-5)
@@ -266,25 +264,12 @@ class TitanBrain:
         # 2. Policy Loss
         logits = out['policy'].reshape(-1, out['policy'].size(-1))
         
-        if y_policy is not None:
-             # Rebuild Raw Sequence of Tokens (IDs only)
-             t_meta = torch.zeros((x_picks.size(0), 1), dtype=torch.long, device=self.device)
-             
-             # Fallback if y_policy is just [xb, xp]
-             # We assume y_policy contains Targets for Bans and Picks.
-             # If user passed x_bans and x_picks as targets, we can reuse x_bans/x_picks or y_policy.
-             # Ideally re-construct 'raw_tokens' from inputs to handle reordering.
-             raw_tokens = torch.cat([t_meta, x_bans, x_picks], dim=1) # [B, 21]
-             
-             # Sort using the Model's sort_indices
-             sort_idx = out['sort_indices']
-             sorted_tokens = torch.gather(raw_tokens, 1, sort_idx) # [B, 21]
-             
-             # Targets are simply the Next Tokens in the Sorted Sequence
-             # Input: sorted[0..19] -> Target: sorted[1..20]
-             targets = sorted_tokens[:, 1:].contiguous().view(-1)
-        else:
-             targets = x_picks.view(-1)
+        # Always build targets for full sequence (20 tokens)
+        t_meta = torch.zeros((x_picks.size(0), 1), dtype=torch.long, device=self.device)
+        raw_tokens = torch.cat([t_meta, x_bans, x_picks], dim=1) # [B, 21]
+        sort_idx = out['sort_indices']
+        sorted_tokens = torch.gather(raw_tokens, 1, sort_idx) # [B, 21]
+        targets = sorted_tokens[:, 1:].contiguous().view(-1)
         
         loss_pol = nn.CrossEntropyLoss()(logits, targets)
         loss = loss_val + loss_pol
@@ -299,10 +284,18 @@ class TitanBrain:
             torch.save(self.model.state_dict(), self.model_path)
             
     def load(self):
-        if not os.path.exists(self.model_path): return False
+        if not os.path.exists(self.model_path):
+            print(f"[TITAN] Checkpoint not found: {self.model_path}")
+            return False
         try:
-            # Assume init called
             # weights_only=True to fix Security Warning
-            self.model.load_state_dict(torch.load(self.model_path, map_location=self.device, weights_only=True))
+            state_dict = torch.load(self.model_path, map_location=self.device, weights_only=True)
+            self.model.load_state_dict(state_dict)
+            self.loaded_successfully = True
             return True
-        except: return False
+        except RuntimeError as e:
+            print(f"[TITAN] ERROR: Model load failed (shape mismatch?): {e}")
+            return False
+        except Exception as e:
+            print(f"[TITAN] ERROR: Unexpected load failure: {e}")
+            return False

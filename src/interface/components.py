@@ -1,25 +1,29 @@
 from PyQt6.QtWidgets import QFrame, QVBoxLayout, QHBoxLayout, QLabel, QWidget, QGraphicsDropShadowEffect
 from PyQt6.QtCore import Qt, pyqtSignal, QRectF, QPointF, QSize, QPropertyAnimation, QEasingCurve, pyqtProperty, QTimer
-from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QLinearGradient, QPolygonF, QPixmap, QPainterPath, QConicalGradient, QRadialGradient
+from PyQt6.QtGui import QColor, QFont, QPainter, QPen, QBrush, QLinearGradient, QPolygonF, QPixmap, QPainterPath, QConicalGradient, QRadialGradient, QTransform
 import random
 import math
+import os
 
 THEME = {
-    "bg_main": "#050A14", # Deep Navy
-    "bg_glass": "rgba(240, 245, 255, 0.10)", # White/Blue Tinted Glass (Brighter)
-    "bg_glass_dark": "rgba(10, 20, 40, 0.85)", # Deep Royal Blue
-    "border_norm": "#786E55", # Muted Bronze
-    "border_active": "#D4AF37", # True Gold
-    "border_glow": "#FFFDF0", # Radiant White-Gold
-    "text_main": "#F0F5FF", # Ice White
-    "text_dim": "#8CA6C8", # Muted Steel Blue
-    "accent_blue": "#E6FFFF", # Radiance (White-Blue)
-    "accent_blue_dim": "rgba(230, 255, 255, 0.2)",
-    "accent_red": "#FF4455", # Vivid Red
-    "success": "#0AC8B9",
-    "font_main": "Segoe UI",
+    "bg_main": "#080A0E",           # Deep obsidian background
+    "bg_glass": "rgba(12, 16, 24, 0.6)", # Frosted glass
+    "bg_glass_dark": "rgba(8, 10, 16, 0.8)",
+    "border_norm": "rgba(255, 255, 255, 0.08)", # Very subtle 1px white border
+    "border_active": "#00E5FF",     # Electric Cyan accent
+    "border_glow": "#FFFFFF",       # Pure white flash
+    "text_main": "#F4F5F8",         # Off-white for high readability
+    "text_dim": "#6A7A90",          # Muted slate/steel blue for secondary text
+    "accent_blue": "#00E5FF",
+    "accent_blue_dim": "rgba(0, 229, 255, 0.15)",
+    "accent_red": "#FF2A55",        # Sharp tactical red
+    "success": "#00FFAA",           # Mint green for optimal stats
+    "font_main": "Inter",           # Assuming a clean modern sans (or Segoe UI fallback)
     "font_data": "Consolas",
-    "text_data": "#8CA6C8",
+    "text_data": "#8A9BAA",
+    "radiant_gold": "#FFD700",       # Rich, glowing gold for mastery/locked picks
+    "void_purple": "#7B00FF",        # Ethereal purple for AI processing/bans
+    "diamond_frost": "#00BFFF",      # Celestial frost for high rank indicators
 }
 
 class HexEffect(QGraphicsDropShadowEffect):
@@ -29,6 +33,106 @@ class HexEffect(QGraphicsDropShadowEffect):
         self.setColor(QColor(color))
         self.setOffset(0, 0)
 
+class TacticalButton(QWidget):
+    """
+    Ultra-minimalist interactive button. Thin neon accent line, pure typography.
+    """
+    clicked = pyqtSignal()
+    
+    def __init__(self, text="", color_key='border_active', parent=None):
+        super().__init__(parent)
+        self.text = text
+        self.color_key = color_key
+        self.setFixedHeight(40)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setMouseTracking(True)
+        self._hover_progress = 0.0
+        self._mouse_x = 0
+        self._mouse_y = 0
+        
+        self.anim_hover = QPropertyAnimation(self, b"hover_progress")
+        self.anim_hover.setDuration(300)
+        self.anim_hover.setEasingCurve(QEasingCurve.Type.OutExpo)
+
+    @pyqtProperty(float)
+    def hover_progress(self):
+        return self._hover_progress
+        
+    @hover_progress.setter
+    def hover_progress(self, val):
+        self._hover_progress = val
+        self.update()
+
+    def mouseMoveEvent(self, event):
+        self._mouse_x = event.position().x()
+        self._mouse_y = event.position().y()
+        self.update()
+        super().mouseMoveEvent(event)
+
+    def enterEvent(self, event):
+        self.anim_hover.stop()
+        self.anim_hover.setStartValue(self._hover_progress)
+        self.anim_hover.setEndValue(1.0)
+        self.anim_hover.start()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self.anim_hover.stop()
+        self.anim_hover.setStartValue(self._hover_progress)
+        self.anim_hover.setEndValue(0.0)
+        self.anim_hover.start()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        rect = self.rect()
+        w, h = rect.width(), rect.height()
+        
+        # Magnetic Hover Translation
+        painter.save()
+        if self._hover_progress > 0.01:
+            mag_x = (self._mouse_x - w/2) * 0.1 * self._hover_progress
+            mag_y = (self._mouse_y - h/2) * 0.15 * self._hover_progress
+            painter.translate(mag_x, mag_y)
+        
+        # 1. Background Fill (Fade in on hover)
+        bg_color = QColor(THEME['border_active']) if self.color_key == 'border_active' else QColor(THEME[self.color_key])
+        bg_alpha = int(40 * self._hover_progress)
+        bg_color.setAlpha(bg_alpha)
+        
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(bg_color)
+        painter.drawRect(rect)
+        
+        # 2. Left Accent Line
+        line_w = 2 + (2 * self._hover_progress)
+        line_color = QColor(THEME[self.color_key])
+        line_color.setAlpha(int(50 + 205 * self._hover_progress))
+        painter.setBrush(line_color)
+        painter.drawRect(0, int((h - h*self._hover_progress)/2), int(line_w), int(h * self._hover_progress))
+        
+        # 3. Typography
+        text_color = QColor(THEME['text_main']) if self._hover_progress > 0.1 else QColor(THEME['text_dim'])
+        painter.setPen(QPen(text_color))
+        font = QFont(THEME['font_main'], 10, QFont.Weight.Bold if self._hover_progress > 0.5 else QFont.Weight.Medium)
+        font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.5)
+        painter.setFont(font)
+        
+        # Slide text slightly right on hover
+        offset = int(6 * self._hover_progress)
+        painter.drawText(QRectF(15 + offset, 0, w - 15 - offset, h), Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft, self.text)
+        
+        painter.restore()
+
+# Alias for backwards compatibility
+HexButton = TacticalButton
+
 class HexFrame(QFrame):
     """
     Base class for Hextech-styled frames with angled corners and borders.
@@ -37,23 +141,40 @@ class HexFrame(QFrame):
         super().__init__(parent)
         self.active = active
         self.color_key = color_key
-        self.hovered = False
+        self._hover_progress = 0.0
         
         # Enable mouse tracking for hover effects
         self.setMouseTracking(True)
+        
+        self.anim_hover = QPropertyAnimation(self, b"hover_progress")
+        self.anim_hover.setDuration(400)
+        self.anim_hover.setEasingCurve(QEasingCurve.Type.OutCubic)
+
+    @pyqtProperty(float)
+    def hover_progress(self):
+        return self._hover_progress
+        
+    @hover_progress.setter
+    def hover_progress(self, val):
+        self._hover_progress = val
+        self.update()
 
     def set_active(self, active):
         self.active = active
         self.update()
 
     def enterEvent(self, event):
-        self.hovered = True
-        self.update()
+        self.anim_hover.stop()
+        self.anim_hover.setStartValue(self._hover_progress)
+        self.anim_hover.setEndValue(1.0)
+        self.anim_hover.start()
         super().enterEvent(event)
 
     def leaveEvent(self, event):
-        self.hovered = False
-        self.update()
+        self.anim_hover.stop()
+        self.anim_hover.setStartValue(self._hover_progress)
+        self.anim_hover.setEndValue(0.0)
+        self.anim_hover.start()
         super().leaveEvent(event)
 
     def paintEvent(self, event):
@@ -63,250 +184,139 @@ class HexFrame(QFrame):
         rect = self.rect()
         w, h = rect.width(), rect.height()
         
-        # Determine Base Colors
-        c_active = QColor(THEME['border_active'])
-        c_norm = QColor(THEME['border_norm'])
-        c_blue = QColor(THEME['accent_blue'])
+        # State checks
+        is_active = getattr(self, 'active', False)
+        h_prog = self._hover_progress
         
-        base_border = c_active if (self.active or self.hovered) else c_norm
-        if self.active: base_border = c_blue
-        
-        # Background Gradient - LINEAR to match angles
+        # Background Gradient
         grad = QLinearGradient(0, 0, w, h)
-        if hasattr(self, 'active') and self.active:
+        if is_active:
             grad.setColorAt(0, QColor(THEME['bg_glass']))
             grad.setColorAt(1, QColor(THEME['bg_glass_dark']))
-        elif hasattr(self, 'hovered') and self.hovered:
-            grad.setColorAt(0, QColor(THEME['bg_glass']))
-            grad.setColorAt(1, QColor(0, 0, 0, 150))
+        elif h_prog > 0.01:
+            bg_h = QColor(THEME['bg_glass'])
+            bg_h.setAlpha(int(60 + 60 * h_prog))
+            grad.setColorAt(0, bg_h)
+            grad.setColorAt(1, QColor(THEME['bg_main']))
         else:
-            grad.setColorAt(0, QColor(0, 0, 0, 100))
+            grad.setColorAt(0, QColor(0, 0, 0, 120))
             grad.setColorAt(1, QColor(0, 0, 0, 200))
             
+        # Draw Angled Background Path (Seamless Chamfered Rectangle)
+        cut = 12 
+        path = QPainterPath()
+        path.moveTo(cut, 0)
+        path.lineTo(w - cut, 0)
+        path.lineTo(w, cut)
+        path.lineTo(w, h - cut)
+        path.lineTo(w - cut, h)
+        path.lineTo(cut, h)
+        path.lineTo(0, h - cut)
+        path.lineTo(0, cut)
+        path.closeSubpath()
+        
         painter.setBrush(QBrush(grad))
         painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawPath(path)
         
-        # Draw Angled Background
-        cut = 15 
-        poly = QPolygonF([
-            QPointF(0, 0), QPointF(w - cut, 0),
-            QPointF(w, cut), QPointF(w, h),
-            QPointF(cut, h), QPointF(0, h - cut)
-        ])
-        painter.drawPolygon(poly)
-        
-        # --- DEMACIAN REGAL BORDER DESIGN (POLISHED GOLD) ---
-        
-        # 0. Shadow/Glow behind
-        if (hasattr(self, 'active') and self.active) or (hasattr(self, 'hovered') and self.hovered):
-             painter.setPen(Qt.PenStyle.NoPen)
-             glow_c = QColor(THEME['border_active'])
-             glow_c.setAlpha(40)
-             painter.setBrush(glow_c)
-             painter.drawPolygon(poly.translated(0, 2))
-        
-        # 1. Base Structure - Metallic Gold Gradient
-        # Create a gradient brush for the pen (PyQt6 requires QPen with QBrush)
-        gold_grad = QLinearGradient(0, 0, w, h)
-        c_dark = QColor("#785A28") # Dark Bronze
-        c_mid  = QColor("#D4AF37") # Classic Gold
-        c_lite = QColor("#FFFDF0") # Highlight
-        
-        gold_grad.setColorAt(0.0, c_dark)
-        gold_grad.setColorAt(0.2, c_mid)
-        gold_grad.setColorAt(0.4, c_lite) # Shine
-        gold_grad.setColorAt(0.6, c_mid)
-        gold_grad.setColorAt(1.0, c_dark)
-        
-        # --- DEMACIAN BORDER (DOUBLE GOLD PLATE - HEXAGONAL) ---
-        
-        # 1. Outer Frame (Dark Bronze/Gold, Thicker)
-        # Gradient Brush defined above (lines 109-118) remains useful
-        pen_outer = QPen(QBrush(gold_grad), 3)
+        # Inner Path for Double Border
+        gap = 4
+        inner_path = QPainterPath()
+        inner_path.moveTo(cut + gap/2, gap)
+        inner_path.lineTo(w - cut - gap/2, gap)
+        inner_path.lineTo(w - gap, cut + gap/2)
+        inner_path.lineTo(w - gap, h - cut - gap/2)
+        inner_path.lineTo(w - cut - gap/2, h - gap)
+        inner_path.lineTo(cut + gap/2, h - gap)
+        inner_path.lineTo(gap, h - cut - gap/2)
+        inner_path.lineTo(gap, cut + gap/2)
+        inner_path.closeSubpath()
+
+        # Shadows & Glow behind the border
+        if is_active or h_prog > 0.01:
+            glow_c = QColor(THEME['border_active']) if h_prog < 0.1 else QColor(THEME['accent_blue'])
+            if h_prog > 0.01 and not is_active:
+                glow_c = QColor(THEME['border_active'])
+            glow_c.setAlpha(int(50 * max(h_prog, 1.0 if is_active else 0.0)))
+            painter.setPen(QPen(glow_c, 6))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawPath(inner_path)
+
+        # Outer Frame - Sleek Metallic
+        outer_grad = QLinearGradient(0, 0, w, h)
+        if is_active or h_prog > 0.01:
+            outer_base = QColor(THEME['border_active'])
+            outer_base.setAlpha(int(255 * max(h_prog, 1.0 if is_active else 0.0)))
+            outer_grad.setColorAt(0.0, outer_base)
+            outer_grad.setColorAt(0.5, QColor(THEME['border_glow'])) # Shine
+            outer_grad.setColorAt(1.0, outer_base)
+        else:
+            outer_grad.setColorAt(0.0, QColor(THEME['border_norm']))
+            outer_grad.setColorAt(0.5, QColor("#506070"))
+            outer_grad.setColorAt(1.0, QColor(THEME['border_norm']))
+            
+        pen_outer = QPen(QBrush(outer_grad), 2.0)
         pen_outer.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
         painter.setPen(pen_outer)
         painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPolygon(poly)
+        painter.drawPath(path)
         
-        # 2. Inner Frame (Bright Polished Gold, Thinner)
-        # Calculate inner polygon with gap
-        gap = 5
-        poly_inner = QPolygonF([
-            QPointF(gap, gap), QPointF(w - cut - gap/2, gap),
-            QPointF(w - gap, cut + gap/2), QPointF(w - gap, h - gap),
-            QPointF(cut + gap/2, h - gap), QPointF(gap, h - cut - gap/2)
-        ])
-        
-        # Bright Gold Gradient for Inner
-        inner_grad = QLinearGradient(w, 0, 0, h)
-        inner_grad.setColorAt(0.0, c_mid)
-        inner_grad.setColorAt(0.5, c_lite) # White Hot
-        inner_grad.setColorAt(1.0, c_mid)
-        
-        pen_inner = QPen(QBrush(inner_grad), 1.5)
+        # Inner Frame
+        inner_grad = QLinearGradient(0, h, w, 0)
+        if is_active:
+            inner_grad.setColorAt(0.0, QColor(THEME['border_glow']))
+            inner_grad.setColorAt(0.5, QColor(THEME['border_active']))
+            inner_grad.setColorAt(1.0, QColor(THEME['border_glow']))
+        else:
+            inner_grad.setColorAt(0.0, QColor("#203040"))
+            inner_grad.setColorAt(0.5, QColor("#405060"))
+            inner_grad.setColorAt(1.0, QColor("#203040"))
+            
+        pen_inner = QPen(QBrush(inner_grad), 1.0)
         painter.setPen(pen_inner)
-        painter.drawPolygon(poly_inner)
+        painter.drawPath(inner_path)
         
-        # 3. Corner Brackets (Connecting the plates)
-        # Gold L-shapes at the corners
-        painter.setPen(Qt.PenStyle.NoPen)
-        b_col = QColor(THEME['border_active']) 
-        painter.setBrush(b_col)
-        
-        # We'll use small rects or paths to bridge the gap at specific points
-        # Top-Left Vertical
-        painter.drawRect(0, 0, 3, 20)
-        # Top-Left Horizontal
-        painter.drawRect(0, 0, 20, 3)
-        
-        # Top-Right
-        painter.drawRect(int(w-20), 0, 20, 3)
-        painter.drawRect(int(w-3), 0, 3, 20)
-        
-        # Bottom-Left
-        painter.drawRect(0, int(h-20), 3, 20)
-        painter.drawRect(0, int(h-3), 20, 3)
-        
-        # Bottom-Right
-        painter.drawRect(int(w-20), int(h-3), 20, 3)
-        painter.drawRect(int(w-3), int(h-20), 3, 20)
-        
-        # Top Center Diamond (Regal Accent)
-        if hasattr(self, 'active') and self.active:
-            painter.save()
-            painter.translate(w/2, 0)
-            painter.rotate(45)
-            painter.setBrush(QColor("#FFFDF0")) # White Gold
-            painter.drawRect(-4, -4, 8, 8)
-            painter.restore()
+        # Elegant Corner Accents
+        if is_active or h_prog > 0.01:
+            accent_color = THEME['accent_blue'] if is_active else THEME['border_active']
+            pen_c = QColor(accent_color)
+            pen_c.setAlpha(int(255 * max(h_prog, 1.0 if is_active else 0.0)))
+            painter.setPen(QPen(pen_c, 2.0))
             
-            # Top-Right "Wing" Accent
-            tr_wings = QPolygonF([
-                 QPointF(w+2, -2), 
-                 QPointF(w-25, -2), 
-                 QPointF(w-5, 18),
-                 QPointF(w+2, 18)
-            ])
-            painter.drawPolygon(tr_wings)
+            # Top-left and Top-right glowing edges
+            painter.drawLine(QPointF(cut, 0), QPointF(cut + 15, 0))
+            painter.drawLine(QPointF(w - cut - 15, 0), QPointF(w - cut, 0))
             
-            # Bottom-Left "Wing" Accent
-            bl_wings = QPolygonF([
-                 QPointF(-2, h+2),
-                 QPointF(-2, h-25),
-                 QPointF(18, h-5),
-                 QPointF(18, h+2)
-            ])
-            painter.drawPolygon(bl_wings)
-            
-            # Corner Gems (Blue Radiance)
-            painter.setBrush(QColor(THEME['accent_blue']))
-            painter.drawEllipse(QPointF(w-8, 8), 2, 2)
-            painter.drawEllipse(QPointF(8, h-8), 2, 2)
-
-
-class AnimatedHexFrame(HexFrame):
-    """
-    Premium animated frame with layered glow effects.
-    """
-    def __init__(self, parent=None, active=True, color_key="border_active"):
-        super().__init__(parent, active, color_key)
-        self._pulse_phase = 0.0
-        
-        self._border_timer = QTimer(self)
-        self._border_timer.timeout.connect(self._tick_border)
-        self._border_timer.setInterval(25)  # 40 FPS for smoother animation
-        self._border_timer.start()
-    
-    def _tick_border(self):
-        self._pulse_phase += 0.06
-        if self._pulse_phase >= 6.28:
-            self._pulse_phase = 0
-        self.update()
-    
-    def paintEvent(self, event):
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
-        
-        w, h = self.width(), self.height()
-        
-        # --- DEMACIAN "DOUBLE GOLD PLATE" BORDER ---
-        
-        # 1. Outer Frame (Dark Bronze/Gold, Thicker)
-        # 3px solid frame
-        outer_rect = QRectF(3, 3, w-6, h-6)
-        
-        # Metallic Gradient
-        outer_grad = QLinearGradient(0, 0, w, h)
-        outer_grad.setColorAt(0.0, QColor("#504020")) # Dark Bronze
-        outer_grad.setColorAt(0.4, QColor("#997530")) # Mid Gold
-        outer_grad.setColorAt(0.5, QColor("#F0E6D2")) # Shine
-        outer_grad.setColorAt(0.6, QColor("#997530")) 
-        outer_grad.setColorAt(1.0, QColor("#504020"))
-        
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.setPen(QPen(QBrush(outer_grad), 3)) 
-        painter.drawRect(outer_rect)
-        
-        # 2. Inner Frame (Bright Polished Gold, Thinner)
-        # Gap of 5px
-        inner_rect = outer_rect.adjusted(5, 5, -5, -5)
-        
-        # Bright Gold Gradient
-        inner_grad = QLinearGradient(w, 0, 0, h)
-        inner_grad.setColorAt(0.0, QColor("#D4AF37"))
-        inner_grad.setColorAt(0.5, QColor("#FFFFFF")) # White Hot Shine
-        inner_grad.setColorAt(1.0, QColor("#D4AF37"))
-        
-        painter.setPen(QPen(QBrush(inner_grad), 1.5))
-        painter.drawRect(inner_rect)
-        
-        # 3. "Breathing" Light in the Gap
-        pulse = 0.5 + 0.5 * math.sin(self._pulse_phase)
-        if pulse > 0.1:
-            glow_c = QColor(THEME['accent_blue'])
-            glow_c.setAlpha(int(30 * pulse)) # Very subtle sheen
+            # Subtle glowing dots at the chamfer vertices
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(glow_c)
-            # Draw rect in the gap
-            gap_rect = outer_rect.adjusted(2, 2, -2, -2)
-            painter.drawRect(gap_rect)
+            painter.setBrush(pen_c)
+            sz = 3.5
+            for pt in [QPointF(w, cut), QPointF(w, h - cut), QPointF(cut, h), QPointF(0, h - cut)]:
+                painter.drawEllipse(pt, sz/2.0, sz/2.0)
+                
+        # Glass Shimmer Overlay (The "Juice")
+        if h_prog > 0.01 and h_prog < 0.99:
+            # Sweep a white sheen across the diagonal
+            shimmer_x = -w + (w * 2.5 * h_prog)
+            shimmer_grad = QLinearGradient(shimmer_x, 0, shimmer_x + w, h)
+            shimmer_grad.setColorAt(0, QColor(255, 255, 255, 0))
             
-        # 4. Corner Brackets (Connecting the two frames)
-        # We draw L-shapes at the corners that bridge the gap
-        bracket_len = 25
-        bracket_c = QColor("#D4AF37") # Pure Gold
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.setBrush(bracket_c)
-        
-        # Helper to draw L-shape
-        def draw_corner(cx, cy, rotation):
-            painter.save()
-            painter.translate(cx, cy)
-            painter.rotate(rotation)
-            # Draw L-shape connecting outer (0,0) towards inner
-            # Simple thick bracket style
-            path = QPainterPath()
-            path.moveTo(0, 0)
-            path.lineTo(bracket_len, 0)
-            path.lineTo(bracket_len, 4) # Thickness
-            path.lineTo(4, 4)
-            path.lineTo(4, bracket_len)
-            path.lineTo(0, bracket_len)
-            path.closeSubpath()
+            pulse = math.sin(h_prog * math.pi) # 0 to 1 to 0
+            shimmer_grad.setColorAt(0.5, QColor(255, 255, 255, int(60 * pulse)))
+            shimmer_grad.setColorAt(1, QColor(255, 255, 255, 0))
+            
+            painter.setBrush(QBrush(shimmer_grad))
+            painter.setPen(Qt.PenStyle.NoPen)
             painter.drawPath(path)
-            painter.restore()
-            
-        # Top-Left
-        draw_corner(outer_rect.left(), outer_rect.top(), 0)
-        # Top-Right
-        draw_corner(outer_rect.right(), outer_rect.top(), 90)
-        # Bottom-Right
-        draw_corner(outer_rect.right(), outer_rect.bottom(), 180)
-        # Bottom-Left
-        draw_corner(outer_rect.left(), outer_rect.bottom(), 270)
 
+# Alias for backwards compatibility and clean naming
+GlassPanel = HexFrame
 
-class CardWidget(HexFrame):
+class TacticalDataCard(GlassPanel):
+    """
+    Sleek, minimalist data readout. Clean typography and sharp accent lines.
+    Replaces the massive 7-layer CardWidget.
+    """
     clicked = pyqtSignal(str)
     
     def __init__(self, loader, data, badge=None):
@@ -318,69 +328,22 @@ class CardWidget(HexFrame):
         self.setFixedSize(140, 200)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         
-        # Animation Properties
-        self._hover_progress = 0.0
         self._click_scale = 1.0
         self._intro_progress = 0.0
-        self._shimmer_offset = -0.5  # Shimmer light position
-        self._shimmer_hue = 0.0  # For rainbow effect
         
-        # NEW: Levitation/Float Effect
-        self._float_phase = 0.0
-        self._float_offset = 0.0  # Vertical offset in pixels
-        
-        # NEW: Tilt toward cursor
-        self._tilt_x = 0.0  # -1 to 1 based on cursor position
-        self._tilt_y = 0.0
-        
-        # NEW: Winrate-based glow pulse speed
-        self._wr_pulse_speed = 1.0  # Modified based on winrate
-        
-        # NEW: Badge animation
-        self._badge_progress = 0.0
-        
-        # Animations
-        self.anim_hover = QPropertyAnimation(self, b"hover_progress")
+        # Override hover duration for snappier cards
         self.anim_hover.setDuration(250)
-        self.anim_hover.setEasingCurve(QEasingCurve.Type.OutCubic)
         
         self.anim_click = QPropertyAnimation(self, b"click_scale")
         self.anim_click.setDuration(120)
         
         self.anim_intro = QPropertyAnimation(self, b"intro_progress")
-        self.anim_intro.setDuration(500)
-        self.anim_intro.setEasingCurve(QEasingCurve.Type.OutBack)
+        self.anim_intro.setDuration(400)
+        self.anim_intro.setEasingCurve(QEasingCurve.Type.OutQuart) # Smooth, snapping drop-in
         
-        # Timer for continuous effects (shimmer, particles, float)
-        self._effect_timer = QTimer(self)
-        self._effect_timer.timeout.connect(self._tick_effects)
-        self._effect_timer.setInterval(16)  # ~60 FPS
-        
-        # Cache for expensive pixmaps
         self._icon_pixmap = None
         self._cached_id = None
-        
-        # Initial update
         self.update_data(data)
-    
-    def _tick_effects(self):
-        """Update shimmer, particles, and float each frame."""
-        # Shimmer sweep with rainbow hue rotation
-        if self._hover_progress > 0.1:
-            self._shimmer_offset += 0.025
-            self._shimmer_hue += 3.0
-            if self._shimmer_hue >= 360:
-                self._shimmer_hue = 0
-            if self._shimmer_offset > 1.5:
-                self._shimmer_offset = -0.5
-        
-        # Badge slide-in animation
-        if self._badge_progress < 1.0:
-            self._badge_progress += 0.05
-        
-        self.update()
-    
-
 
     @pyqtProperty(float)
     def intro_progress(self):
@@ -389,15 +352,6 @@ class CardWidget(HexFrame):
     @intro_progress.setter
     def intro_progress(self, val):
         self._intro_progress = val
-        self.update()
-
-    @pyqtProperty(float)
-    def hover_progress(self):
-        return self._hover_progress
-        
-    @hover_progress.setter
-    def hover_progress(self, val):
-        self._hover_progress = val
         self.update()
         
     @pyqtProperty(float)
@@ -409,39 +363,22 @@ class CardWidget(HexFrame):
         self._click_scale = val
         self.update()
 
-    def enterEvent(self, event):
-        self.anim_hover.stop()
-        self.anim_hover.setStartValue(self._hover_progress)
-        self.anim_hover.setEndValue(1.0)
-        self.anim_hover.start()
-        self._effect_timer.start()  # Start shimmer/particle timer
-        
-        super().enterEvent(event)
 
-    def leaveEvent(self, event):
-        self.anim_hover.stop()
-        self.anim_hover.setStartValue(self._hover_progress)
-        self.anim_hover.setEndValue(0.0)
-        self.anim_hover.start()
-        # Don't stop timer immediately - let particles fade out
-        super().leaveEvent(event)
 
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
             self.anim_click.stop()
             self.anim_click.setStartValue(1.0)
-            self.anim_click.setEndValue(0.95)
-            self.anim_click.setEasingCurve(QEasingCurve.Type.OutQuad)
+            self.anim_click.setEndValue(0.97)
             self.anim_click.start()
         super().mousePressEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.MouseButton.LeftButton:
-            # Spring back
             self.anim_click.stop()
             self.anim_click.setStartValue(self._click_scale)
             self.anim_click.setEndValue(1.0)
-            self.anim_click.setEasingCurve(QEasingCurve.Type.OutElastic) # Juicy bounce
+            self.anim_click.setEasingCurve(QEasingCurve.Type.OutBack)
             self.anim_click.start()
             
             if self.data and 'id' in self.data:
@@ -451,25 +388,15 @@ class CardWidget(HexFrame):
     def update_data(self, data):
         self.data = data
         cid = data.get('id')
-        wr = data.get('wr', 50.0)
         
-        # Set winrate-based pulse speed (high WR = faster pulse)
-        if wr > 52.0:
-            self._wr_pulse_speed = 1.5 + (wr - 52) * 0.1  # Faster for higher WR
-        elif wr < 48.0:
-            self._wr_pulse_speed = 0.7  # Slower for low WR
-        else:
-            self._wr_pulse_speed = 1.0
-        
-        # Update Icon only if changed
         if cid != self._cached_id and self.loader and cid:
             path = self.loader.get_champ_icon_path(str(cid))
             if path:
                 original = QPixmap(path)
-                self._icon_pixmap = original.scaled(100, 100, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
+                self._icon_pixmap = original.scaled(80, 80, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
             self._cached_id = cid
             
-            # Trigger Entry Animation
+            # Restart Intro
             self.anim_intro.stop()
             self.anim_intro.setStartValue(0.0)
             self.anim_intro.setEndValue(1.0)
@@ -478,220 +405,95 @@ class CardWidget(HexFrame):
         self.update()
 
     def paintEvent(self, event):
+        # We handle Base Panel via GlassPanel's paintEvent, but
+        # wait, we're doing a total custom render using GlassPanel's style internally
+        # so we'll call super() to draw the glass base!
+        
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
         
-        rect = self.rect()
-        w, h = rect.width(), rect.height()
-        cut = 15
+        w, h = self.width(), self.height()
         
-        # --- 0. Entry Animation Transform ---
-        if self._intro_progress < 1.0:
-            painter.setOpacity(self._intro_progress)
-            slide_off = 15 * (1.0 - self._intro_progress)
-            painter.translate(0, slide_off)
+        # Determine overall opacity / translation (Intro Animation)
+        c_scale = self._click_scale
+        h_prog = self._hover_progress
+        intro_alpha = self._intro_progress
         
-        # --- 1. Apply Click Scale Transform ---
-        painter.translate(w/2, h/2)
-        painter.scale(self._click_scale, self._click_scale)
-        painter.translate(-w/2, -h/2)
+        if intro_alpha <= 0: return
         
-        # --- 2. BASE GLASS BACKGROUND (Royal Blue) ---
-        poly = QPolygonF([
-            QPointF(0, 0), QPointF(w - cut, 0),
-            QPointF(w, cut), QPointF(w, h),
-            QPointF(cut, h), QPointF(0, h - cut),
-            QPointF(0, cut * 2)
-        ])
+        painter.setOpacity(intro_alpha)
+        # Y-Drop
+        drop_y = (1.0 - self._intro_progress) * 15
         
-        grad_bg = QLinearGradient(0, 0, 0, h)
+        painter.translate(w/2, h/2 + drop_y)
+        painter.scale(c_scale, c_scale)
+        painter.translate(-w/2, -h/2 - drop_y)
         
-        # Hover logic: Brighten significantly for "Holy" feel
-        if self._hover_progress > 0.01:
-            # Radiant Blue/Gold tint on hover
-            grad_bg.setColorAt(0, QColor(20, 40, 80, 240))
-            grad_bg.setColorAt(1, QColor(10, 20, 50, 250))
-        else:
-            # Deep Navy default
-            grad_bg.setColorAt(0, QColor(10, 20, 30, 240))
-            grad_bg.setColorAt(1, QColor(5, 8, 12, 250))
-            
-        painter.setBrush(QBrush(grad_bg))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawPolygon(poly)
+        # 1. Base Glass
+        bg_c = QColor(12, 16, 24, 160)
+        if h_prog > 0.01:
+            bg_c = QColor(18, 24, 32, 210)
+        painter.setBrush(bg_c)
+        painter.setPen(QPen(QColor(255, 255, 255, 10 + int(30 * h_prog)), 1))
+        painter.drawRoundedRect(0, 0, w-1, h-1, 4, 4)
         
-        # --- 3. RADIANT GODRAY (The "Sweeping Beam") ---
-        # A vertical beam of light that appears on hover
-        if self._hover_progress > 0.01:
-            painter.save()
-            path = QPainterPath()
-            path.addPolygon(poly)
-            painter.setClipPath(path)
-            
-            # Beam width and position
-            beam_w = w * 0.8
-            beam_x = (w - beam_w) / 2
-            
-            beam_grad = QLinearGradient(0, h, 0, 0) # Bottom to Top
-            c_beam = QColor(THEME['accent_blue'])
-            # Alpha based on hover
-            beam_alpha = int(80 * self._hover_progress) 
-            
-            beam_grad.setColorAt(0, QColor(255, 255, 255, 0))
-            beam_grad.setColorAt(0.5, QColor(c_beam.red(), c_beam.green(), c_beam.blue(), beam_alpha))
-            beam_grad.setColorAt(1, QColor(255, 255, 255, 0))
-            
-            painter.setBrush(QBrush(beam_grad))
+        # 2. Top Accent Line (Minimal Neon)
+        if h_prog > 0.01:
+            line_w = w * h_prog
+            painter.setBrush(QColor(THEME['border_active']))
             painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRect(int(beam_x), 0, int(beam_w), h)
+            painter.drawRect(int(w/2 - line_w/2), 0, int(line_w), 2)
             
-            painter.restore()
-        
-        # --- 4. CHAMPION VISUALS (Lift & Halo) ---
+        # 3. Champion Image (Desaturated unless hovered)
+        cx, cy = w/2, 60
         if self._icon_pixmap:
-            painter.save()
-            path = QPainterPath()
-            path.addPolygon(poly)
-            painter.setClipPath(path)
-            
-            cx, cy = w/2, 70
-            
-            # --- ANIMATION: SCALE ---
-            progress = self._hover_progress
-            # Smooth ease-out for scale: 1.0 -> 1.05 (Subtle)
-            scale_factor = 1.0 + (0.05 * progress)
-            
-            # --- A. HOLY HALO (Backglow) ---
-            if progress > 0.01:
-                halo_r = 70 * scale_factor
-                halo_grad = QRadialGradient(cx, cy, halo_r)
-                halo_grad.setColorAt(0.5, QColor(255, 255, 255, 0))
-                halo_grad.setColorAt(0.8, QColor(255, 220, 100, int(150 * progress))) # Gold/White Halo
-                halo_grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+            if h_prog > 0.1:
+                # Add a subtle glowing ring
+                ring_c = QColor(THEME['border_active'])
+                ring_c.setAlpha(int(60 * h_prog))
+                painter.setPen(QPen(ring_c, 1))
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+                painter.drawEllipse(QPointF(cx, cy), 44, 44)
                 
-                painter.setBrush(QBrush(halo_grad))
-                painter.setPen(Qt.PenStyle.NoPen)
-                painter.drawRect(0,0,w,h)
-            
-            # --- B. BACKGROUND ICON (Faded, Static) ---
-            painter.setOpacity(0.15)
-            # Static background version for depth
-            painter.drawPixmap(int(cx - 60), int(cy - 60), 120, 120, self._icon_pixmap)
-            
-            # --- C. MAIN ICON (Animated) ---
-            painter.setOpacity(1.0)
-            icon_s = 85 * scale_factor
-            
-            # Draw icon
-            painter.drawPixmap(
-                int(cx - icon_s/2), 
-                int(cy - icon_s/2), 
-                int(icon_s), 
-                int(icon_s), 
-                self._icon_pixmap
-            )
-            
-            # --- D. INNER SHADOW (Vignette) ---
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-            grad_vig = QRadialGradient(cx, cy, icon_s * 0.9)
-            grad_vig.setColorAt(0.8, QColor(0,0,0,0))
-            grad_vig.setColorAt(1.0, QColor(5, 10, 20, 150))
-            painter.setBrush(QBrush(grad_vig))
-            painter.drawRect(0,0,w,h)
-            
-            painter.restore()
-            
-        # --- 5. DATA HUD (Gold Details) ---
-        mid_y = 130
+            # Fake Desaturation: We'll draw image with lower opacity, then a white/grey blend
+            # Or just draw it full if hovered, semi-transparent otherwise.
+            img_alpha = 0.6 + (0.4 * h_prog)
+            painter.setOpacity(intro_alpha * img_alpha)
+            painter.drawPixmap(int(cx - 40), int(cy - 40), self._icon_pixmap)
+            painter.setOpacity(intro_alpha)
         
-        # Divider Line (Metallic Gold)
-        c_gold = QColor(THEME['border_active'])
-        painter.setPen(QPen(c_gold, 1))
-        painter.drawLine(10, mid_y, int(w/2 - 5), mid_y)
-        painter.drawLine(int(w/2 + 5), mid_y, w-10, mid_y)
-        
-        # Center Diamond
-        painter.setBrush(c_gold)
-        painter.drawRect(int(w/2 - 2), int(mid_y - 2), 4, 4)
+        # 4. Typography Layout
+        wr = self.data.get('wr', 0.0)
+        name = self.data.get('name', 'UNKNOWN').upper()
+        games = self.data.get('games', 0)
         
         # Champion Name
-        painter.setPen(QColor(THEME['text_main']))
+        text_c = QColor(THEME['text_main']) if h_prog > 0.5 else QColor(THEME['text_dim'])
+        painter.setPen(text_c)
         font_name = QFont(THEME['font_main'], 11, QFont.Weight.Bold)
         font_name.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 1.2)
         painter.setFont(font_name)
+        painter.drawText(QRectF(0, 115, w, 20), Qt.AlignmentFlag.AlignCenter, name)
         
-        name = self.data.get('name', 'Unknown').upper()
-        # Text also lifts slightly on hover? No, keep text stable for readability
-        painter.drawText(QRectF(0, 135, w, 25), Qt.AlignmentFlag.AlignCenter, name)
-        
-        # Winrate / Subtitle Pill
-        subtitle = self.data.get('subtitle')
-        if not subtitle:
-            # Fallback to WR logic
-            wr = self.data.get('wr', 50.0)
-            subtitle = f"{wr:.1f}%"
+        # Win Rate Readout
+        is_success = wr >= 50.0
+        wr_color = QColor(THEME['success']) if is_success else QColor(THEME['accent_red'])
+        if h_prog < 0.1:
+            wr_color.setAlpha(180) # Dim slightly when not hovered
             
-        wr_rect = QRectF(w/2 - 30, 165, 60, 18)
-        painter.setBrush(QColor(20, 30, 50))
-        painter.setPen(QPen(QColor(THEME['border_norm']), 1))
-        painter.drawRoundedRect(wr_rect, 4, 4)
+        painter.setPen(wr_color)
+        font_data = QFont(THEME['font_data'], 16, QFont.Weight.Bold)
+        painter.setFont(font_data)
+        painter.drawText(QRectF(0, 140, w, 25), Qt.AlignmentFlag.AlignCenter, f"{wr:.1f}%")
         
-        c_text = QColor(THEME['success'])
-        # If it looks like a winrate, color it
-        if "%" in subtitle:
-            try:
-                 val = float(subtitle.strip('%'))
-                 if val < 49: c_text = QColor(THEME['accent_red'])
-            except: pass
-        else:
-            c_text = QColor(THEME['border_active']) # Gold for text
-        
-        painter.setFont(QFont(THEME['font_data'], 9, QFont.Weight.Bold))
-        painter.setPen(c_text)
-        painter.drawText(wr_rect, Qt.AlignmentFlag.AlignCenter, subtitle)
-        
+        # Sub-stats (Games Played)
+        painter.setPen(QColor(THEME['text_data']))
+        font_sub = QFont(THEME['font_main'], 8)
+        font_sub.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.5)
+        painter.setFont(font_sub)
+        painter.drawText(QRectF(0, 168, w, 15), Qt.AlignmentFlag.AlignCenter, f"{games} MATCHES")
 
-        
-        # --- 7. BORDER (Polished Gold Transition) ---
-        # Base Bronze 
-        c_base = QColor("#785A28")
-        
-        if self._hover_progress > 0.01:
-            # Transition to Polished Gold Gradient
-            # Draw metallic gold border
-            gold_grad = QLinearGradient(0, 0, w, h)
-            gold_grad.setColorAt(0.0, QColor("#997530"))
-            gold_grad.setColorAt(0.3, QColor("#F0E6D2")) # Shine
-            gold_grad.setColorAt(0.6, QColor("#D4AF37"))
-            gold_grad.setColorAt(1.0, QColor("#785A28"))
-            
-            painter.setPen(QPen(QBrush(gold_grad), 2))
-        else:
-            # Flat Bronze
-            painter.setPen(QPen(c_base, 1.5))
-            
-        painter.setBrush(Qt.BrushStyle.NoBrush)
-        painter.drawPolygon(poly)
-        
-        # Corner Wing Accents (Only on Hover)
-        if self._hover_progress > 0.1:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(QColor("#D4AF37"))
-            
-            # Simple wing tips
-            tip_h = 8 * self._hover_progress
-            # BL
-            painter.drawPolygon(QPolygonF([QPointF(0, h), QPointF(8, h), QPointF(0, h-tip_h)]))
-            # TR
-            painter.drawPolygon(QPolygonF([QPointF(w, 0), QPointF(w-8, 0), QPointF(w, tip_h)]))
-                    
-
-
-    def _lerp_color(self, c1, c2, t):
-        r = c1.red() + (c2.red() - c1.red()) * t
-        g = c1.green() + (c2.green() - c1.green()) * t
-        b = c1.blue() + (c2.blue() - c1.blue()) * t
-        a = c1.alpha() + (c2.alpha() - c1.alpha()) * t
-        return QColor(int(r), int(g), int(b), int(a))
+# Alias for backwards compatibility
+CardWidget = TacticalDataCard
 

@@ -4,8 +4,17 @@ import requests
 from PyQt6.QtGui import QPixmap, QPainter, QBrush, QBitmap, QColor
 from PyQt6.QtCore import Qt, QSize
 
-# Configuration
-DDRAGON_VER = "15.24.1" # Could fetch dynamically, but fixed for stability/speed
+def _get_ddragon_version():
+    """Fetch latest DDragon version dynamically, with hardcoded fallback."""
+    try:
+        r = requests.get("https://ddragon.leagueoflegends.com/api/versions.json", timeout=5)
+        if r.status_code == 200:
+            return r.json()[0]
+    except Exception:
+        pass
+    return "15.24.1"  # Fallback
+
+DDRAGON_VER = _get_ddragon_version()
 BASE_URL_CHAMP = f"https://ddragon.leagueoflegends.com/cdn/{DDRAGON_VER}/img/champion/"
 BASE_URL_ITEM = f"https://ddragon.leagueoflegends.com/cdn/{DDRAGON_VER}/img/item/"
 
@@ -14,10 +23,12 @@ class AssetDownloader:
     def __init__(self, asset_dir="assets"):
         self.asset_dir = asset_dir
         self.champ_dir = os.path.join(asset_dir, "champs")
+        self.splash_dir = os.path.join(asset_dir, "champs_splash")
         self.item_dir = os.path.join(asset_dir, "items")
         
         # Ensure directories
         os.makedirs(self.champ_dir, exist_ok=True)
+        os.makedirs(self.splash_dir, exist_ok=True)
         os.makedirs(self.item_dir, exist_ok=True)
 
     def get_champ_icon_path(self, champ_id_name):
@@ -36,6 +47,24 @@ class AssetDownloader:
             
         # Download
         url = f"{BASE_URL_CHAMP}{filename}"
+        return self._download_file(url, path)
+
+    def get_champ_splash_path(self, champ_id_name, skin_num=0):
+        """
+        Retrieves full champion art (centered/splash). 
+        DataDragon URL structure for splashes: cdn/img/champion/splash/{ChampName}_{SkinNum}.jpg
+        """
+        if not champ_id_name: return None
+        if str(champ_id_name) == "0": return None
+        
+        filename = f"{champ_id_name}_{skin_num}.jpg"
+        path = os.path.join(self.splash_dir, filename)
+        
+        if os.path.exists(path):
+            return path
+            
+        # Download (Note: Splash arts don't use the version string in the URL base)
+        url = f"https://ddragon.leagueoflegends.com/cdn/img/champion/splash/{filename}"
         return self._download_file(url, path)
 
     def get_item_icon_path(self, item_id):
@@ -74,6 +103,10 @@ class AssetLoader(AssetDownloader):
     def get_champ_icon(self, champ_id_name):
         """UI Convenience Wrapper"""
         return self.get_champ_icon_path(champ_id_name)
+    
+    def get_champ_splash(self, champ_id_name, skin_num=0):
+        """UI Convenience Wrapper for Splash Arts"""
+        return self.get_champ_splash_path(champ_id_name, skin_num)
     
     def get_item_icon(self, item_id):
         """UI Convenience Wrapper"""

@@ -47,8 +47,9 @@ class TitanEngine:
         
         # 4. Initialize Brain (TitanNet)
         print("[TITAN] Loading Neural Network...")
+        from src.engine.titan_brain import VOCAB_SIZE
         self.brain = TitanBrain()
-        self.brain.initialize(vocab_size=3000)
+        self.brain.initialize(vocab_size=VOCAB_SIZE)
         
         # Checkpoints
         current_dir = os.path.dirname(os.path.abspath(__file__)) # src/engine

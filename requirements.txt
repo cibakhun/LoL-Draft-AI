@@ -1,8 +1,6 @@
 requests
-pandas
-scikit-learn
-lcu-driver
-python-dotenv
 torch
 numpy
+joblib
 pydantic
+PyQt6
